@@ -38,7 +38,7 @@ jobs:
     - if: matrix.build-mode == 'manual'
       shell: bash
       run: |
-        ./configure
+        ./configure --without-readline
         make
     - name: Free disk space
       run: |
