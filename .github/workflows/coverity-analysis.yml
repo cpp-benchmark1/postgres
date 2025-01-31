@@ -40,7 +40,7 @@ jobs:
           echo "Coverity Tool installed successfully"
       - name: Build with Coverity
         run: |
-          ./configure --without-readline
+          bash ./configure --without-readline
           coverity_tool/bin/cov-build --dir cov-int make
       - name: Compress with bzip2
         run: |
