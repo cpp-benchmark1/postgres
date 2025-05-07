@@ -1,0 +1,43 @@
+# System Dependencies
+build-essential>=12.9
+netcat-openbsd>=1.10.41
+vim>=8.2
+
+# Build Requirements
+gcc>=9.4.0
+make>=4.2.1
+
+# Network Configuration
+# Port: 8080 (TCP)
+# Protocol: TCP
+# Socket Type: SOCK_STREAM
+
+# Compilation Commands
+# gcc -o vuln-cwe134-ex1 plant-vuln-cwe134-ex1.c
+# gcc -o vuln-cwe134-ex2 plant-vuln-cwe134-ex2.c
+
+# Test Requirements
+# - netcat (nc) for sending test payloads
+# - Two terminal sessions for testing
+# - Docker for containerized environment
+
+# Security Notice
+# These programs contain intentional vulnerabilities (CWE-134)
+# DO NOT use in production environments
+# For educational purposes only
+
+# Test Environment
+# OS: Ubuntu (latest)
+# Container: Docker
+# Architecture: x86_64
+
+# Required Headers
+# - netinet/in.h
+# - stdio.h
+# - stdlib.h
+# - string.h
+# - sys/socket.h
+# - unistd.h
+# - time.h
+# - sys/types.h
+# - arpa/inet.h
