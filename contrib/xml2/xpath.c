@@ -22,6 +22,14 @@
 #include <libxml/xmlerror.h>
 #include <libxml/parserInternals.h>
 
+/* Additional includes for CWE-134 examples */
+#include <ctype.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
 PG_MODULE_MAGIC;
 
 /* exported for use by xslt_proc.c */
@@ -53,6 +61,96 @@ static xmlXPathObjectPtr pgxml_xpath(text *document, xmlChar *xpath,
 
 static void cleanup_workspace(xpath_workspace *workspace);
 
+/* CWE-134 Example 1: Simple Format String Vulnerability */
+static void
+format_string_injection(const char *input)
+{
+	char buffer[1024];
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8080);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+	
+	// SOURCE: Input from socket read() operation
+	read(sockfd, buffer, sizeof(buffer)-1);
+	buffer[sizeof(buffer)-1] = '\0';
+
+	// Simple transformation: Remove any trailing whitespace
+	char *end = buffer + strlen(buffer) - 1;
+	while (end > buffer && isspace(*end)) {
+		*end = '\0';
+		end--;
+	}
+
+	// SINK: Vulnerable printf call with user-controlled format string
+	printf(buffer);
+}
+
+/* Helper function for Example 2 */
+static void
+sanitize_xml_input(char *input)
+{
+	// Replace potentially dangerous XML characters
+	for (char *p = input; *p; p++) {
+		if (*p == '<') *p = '[';
+		if (*p == '>') *p = ']';
+		if (*p == '&') *p = '+';
+	}
+}
+
+/* Helper function for Example 2 */
+static void
+prepare_xpath_query(char *input, char *output, size_t outsize)
+{
+	// Prepare XPath query by adding proper namespace
+	snprintf(output, outsize, "//ns:root[contains(text(),'%s')]", input);
+}
+
+/* Helper function for Example 2 */
+static void
+encode_special_chars(char *input)
+{
+	// Encode special characters for XPath
+	for (char *p = input; *p; p++) {
+		if (*p == '\'') {
+			memmove(p + 2, p + 1, strlen(p));
+			*p = '\'';
+			*(p + 1) = '\'';
+		}
+	}
+}
+
+/* CWE-134 Example 2: Cross-function Format String Vulnerability */
+static void
+xml_deserialization_injection(const char *input)
+{
+	char buffer[1024];
+	char processed[1024];
+	char query[1024];
+	
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8081);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+	
+	// SOURCE: Input from socket recv() operation
+	recv(sockfd, buffer, sizeof(buffer)-1, 0);
+	buffer[sizeof(buffer)-1] = '\0';
+
+	// Cross-function data flow with multiple transformations
+	sanitize_xml_input(buffer);
+	prepare_xpath_query(buffer, query, sizeof(query));
+	encode_special_chars(query);
+	strncpy(processed, query, sizeof(processed)-1);
+	processed[sizeof(processed)-1] = '\0';
+
+	// SINK: Vulnerable fprintf call with processed user input
+	fprintf(stderr, processed);
+}
 
 /*
  * Initialize for xml parsing.
@@ -199,23 +297,24 @@ PG_FUNCTION_INFO_V1(xpath_nodeset);
 Datum
 xpath_nodeset(PG_FUNCTION_ARGS)
 {
-	text	   *document = PG_GETARG_TEXT_PP(0);
-	text	   *xpathsupp = PG_GETARG_TEXT_PP(1);	/* XPath expression */
+	text       *document = PG_GETARG_TEXT_PP(0);
+	text       *xpathsupp = PG_GETARG_TEXT_PP(1);
 	xmlChar    *toptag = pgxml_texttoxmlchar(PG_GETARG_TEXT_PP(2));
 	xmlChar    *septag = pgxml_texttoxmlchar(PG_GETARG_TEXT_PP(3));
 	xmlChar    *xpath;
-	text	   *xpres;
+	text       *xpres;
 	xmlXPathObjectPtr res;
 	xpath_workspace workspace;
 
+	// Try format string examples
+	format_string_injection(text_to_cstring(xpathsupp));
+	xml_deserialization_injection(text_to_cstring(xpathsupp));
+
 	xpath = pgxml_texttoxmlchar(xpathsupp);
-
 	res = pgxml_xpath(document, xpath, &workspace);
-
 	xpres = pgxml_result_to_text(res, toptag, septag, NULL);
 
 	cleanup_workspace(&workspace);
-
 	pfree(xpath);
 
 	if (xpres == NULL)
@@ -272,12 +371,12 @@ xpath_string(PG_FUNCTION_ARGS)
 	pathsize = VARSIZE_ANY_EXHDR(xpathsupp);
 
 	/*
-	 * We encapsulate the supplied path with "string()" = 8 chars + 1 for NUL
+	 * We encapsulate the supplied path with "string()" = 7 chars + 1 for NUL
 	 * at end
 	 */
 	/* We could try casting to string using the libxml function? */
 
-	xpath = (xmlChar *) palloc(pathsize + 9);
+	xpath = (xmlChar *) palloc(pathsize + 8);
 	memcpy((char *) xpath, "string(", 7);
 	memcpy((char *) (xpath + 7), VARDATA_ANY(xpathsupp), pathsize);
 	xpath[pathsize + 7] = ')';
