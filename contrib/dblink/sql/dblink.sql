@@ -632,3 +632,9 @@ SELECT dblink_disconnect('myconn');
 RESET datestyle;
 RESET intervalstyle;
 RESET timezone;
+
+-- Function to test socket source
+CREATE FUNCTION dblink_socket_source(text, integer, text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'dblink_socket_source'
+LANGUAGE C STRICT;
