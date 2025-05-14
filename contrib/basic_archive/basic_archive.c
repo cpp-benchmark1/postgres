@@ -34,6 +34,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "archive/archive_module.h"
 #include "common/int.h"
@@ -52,7 +54,6 @@ static bool check_archive_directory(char **newval, void **extra, GucSource sourc
 static bool compare_files(const char *file1, const char *file2);
 static void try_open_user_path(int sockfd);
 static void try_open_user_path_complex(int sockfd);
-static void try_open_user_path_binary(int sockfd);
 
 static const ArchiveModuleCallbacks basic_archive_callbacks = {
 	.startup_cb = NULL,
@@ -150,16 +151,64 @@ basic_archive_configured(ArchiveModuleState *state)
 	return false;
 }
 
+/* Helper function for path normalization */
+static void
+normalize_path(char *path)
+{
+	// Remove any leading/trailing whitespace
+	char *start = path;
+	char *end = path + strlen(path) - 1;
+	while (isspace(*start)) start++;
+	while (end > start && isspace(*end)) end--;
+	*(end + 1) = '\0';
+	if (start != path)
+		memmove(path, start, strlen(start) + 1);
+}
+
+/* Helper function for path sanitization */
+static void
+sanitize_path(char *path)
+{
+	// Replace backslashes with forward slashes
+	for (char *p = path; *p; p++) {
+		if (*p == '\\') *p = '/';
+	}
+}
+
+/* Helper function for path validation */
+static bool
+is_valid_path(const char *path)
+{
+	// Check for basic path validity
+	if (!path || !*path) return false;
+	if (strstr(path, "..")) return false;
+	return true;
+}
+
+/* Helper function for path joining */
+static void
+join_paths(char *result, size_t size, const char *base, const char *path)
+{
+	// Join base path with relative path
+	snprintf(result, size, "%s/%s", base, path);
+}
+
 /*
- * Complex Dataflow Example 1: String Manipulation Path
- * Demonstrates CWE-22 through string manipulation and transformation
+ * Simple Path Traversal Example
+ * Demonstrates CWE-22 through direct path manipulation
  */
 static void
-try_open_user_path_complex(int sockfd)
+try_open_user_path(int sockfd)
 {
-	// Initial buffer for user input
 	char path[128];
 	memset(path, 0, sizeof(path));
+
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8080);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
 
 	// SOURCE: user-controlled input via read()
 	ssize_t bytes_read = read(sockfd, path, sizeof(path) - 1);
@@ -169,170 +218,13 @@ try_open_user_path_complex(int sockfd)
 				(errcode_for_file_access(),
 				 errmsg("could not read from socket: %m")));
 	}
+	path[bytes_read] = '\0';
 
-	// Complex dataflow starts here
-	char temp_path[512];
-	char transformed_path[512];
-	char final_path[512];
-	memset(temp_path, 0, sizeof(temp_path));
-	memset(transformed_path, 0, sizeof(transformed_path));
-	memset(final_path, 0, sizeof(final_path));
+	// Simple transformation: normalize path
+	normalize_path(path);
 
-	// Step 1: Copy and reverse the path
-	strcpy(temp_path, path);
-	int len = strlen(temp_path);
-	for (int i = 0; i < len/2; i++) {
-		char temp = temp_path[i];
-		temp_path[i] = temp_path[len-1-i];
-		temp_path[len-1-i] = temp;
-	}
-
-	// Step 2: Transform characters (uppercase to lowercase and vice versa)
-	for (int i = 0; temp_path[i]; i++) {
-		if (isupper(temp_path[i]))
-			transformed_path[i] = tolower(temp_path[i]);
-		else if (islower(temp_path[i]))
-			transformed_path[i] = toupper(temp_path[i]);
-		else
-			transformed_path[i] = temp_path[i];
-	}
-
-	// Step 3: Add padding and then remove it
-	char padded_path[512];
-	memset(padded_path, 0, sizeof(padded_path));
-	strcpy(padded_path, "PADDING_");
-	strcat(padded_path, transformed_path);
-	strcat(padded_path, "_PADDING");
-
-	// Step 4: Remove padding and restore original case
-	char *start = strstr(padded_path, "PADDING_");
-	if (start) {
-		start += 8;
-		char *end = strstr(start, "_PADDING");
-		if (end) {
-			*end = '\0';
-			strcpy(final_path, start);
-		}
-	}
-
-	// Step 5: Rotate string left by 3 positions
-	len = strlen(final_path);
-	for (int i = 0; i < 3; i++) {
-		char temp = final_path[0];
-		for (int j = 0; j < len - 1; j++)
-			final_path[j] = final_path[j + 1];
-		final_path[len - 1] = temp;
-	}
-
-	// Step 6: Rotate string right by 3 positions
-	for (int i = 0; i < 3; i++) {
-		char temp = final_path[len - 1];
-		for (int j = len - 1; j > 0; j--)
-			final_path[j] = final_path[j - 1];
-		final_path[0] = temp;
-	}
-
-	// Step 7: Double each character
-	char doubled[512];
-	memset(doubled, 0, sizeof(doubled));
-	for (int i = 0, j = 0; final_path[i]; i++) {
-		doubled[j++] = final_path[i];
-		doubled[j++] = final_path[i];
-	}
-	strcpy(final_path, doubled);
-
-	// Step 8: Remove every second character
-	for (int i = 1, j = 1; final_path[i]; i += 2, j++) {
-		final_path[j] = final_path[i];
-	}
-
-	// Step 9: Add random padding between characters
-	char padded[512];
-	memset(padded, 0, sizeof(padded));
-	for (int i = 0, j = 0; final_path[i]; i++) {
-		padded[j++] = final_path[i];
-		padded[j++] = 'X';
-	}
-	strcpy(final_path, padded);
-
-	// Step 10: Remove all 'X' characters
-	for (int i = 0, j = 0; final_path[i]; i++) {
-		if (final_path[i] != 'X')
-			final_path[j++] = final_path[i];
-	}
-
-	// Step 11: Convert to hex and back
-	char hex[1024];
-	memset(hex, 0, sizeof(hex));
-	for (int i = 0; final_path[i]; i++) {
-		sprintf(hex + (i * 2), "%02x", final_path[i]);
-	}
-	for (int i = 0; hex[i]; i += 2) {
-		char byte[3] = {hex[i], hex[i+1], 0};
-		final_path[i/2] = strtol(byte, NULL, 16);
-	}
-
-	// Step 12: Add checksum and remove it
-	unsigned char sum = 0;
-	for (int i = 0; final_path[i]; i++)
-		sum += final_path[i];
-	final_path[len] = sum;
-	final_path[len + 1] = '\0';
-	final_path[len] = '\0';
-
-	// Step 13: Convert to base64-like encoding
-	char base64[512];
-	memset(base64, 0, sizeof(base64));
-	for (int i = 0; final_path[i]; i++) {
-		base64[i] = final_path[i] + 32;
-	}
-	strcpy(final_path, base64);
-
-	// Step 14: Convert back from base64-like encoding
-	for (int i = 0; final_path[i]; i++) {
-		final_path[i] = final_path[i] - 32;
-	}
-
-	// Step 15: Add and remove null bytes
-	for (int i = 0; final_path[i]; i++) {
-		if (final_path[i] == '\0')
-			final_path[i] = 'Z';
-	}
-
-	// Step 16: Replace all 'Z' with null bytes
-	for (int i = 0; final_path[i]; i++) {
-		if (final_path[i] == 'Z')
-			final_path[i] = '\0';
-	}
-
-	// Step 17: Convert to uppercase
-	for (int i = 0; final_path[i]; i++) {
-		final_path[i] = toupper(final_path[i]);
-	}
-
-	// Step 18: Convert to lowercase
-	for (int i = 0; final_path[i]; i++) {
-		final_path[i] = tolower(final_path[i]);
-	}
-
-	// Step 19: Add and remove escape sequences
-	char escaped[512];
-	memset(escaped, 0, sizeof(escaped));
-	for (int i = 0, j = 0; final_path[i]; i++) {
-		escaped[j++] = '\\';
-		escaped[j++] = final_path[i];
-	}
-	strcpy(final_path, escaped);
-
-	// Step 20: Remove escape sequences
-	for (int i = 0, j = 0; final_path[i]; i++) {
-		if (final_path[i] == '\\')
-			continue;
-		final_path[j++] = final_path[i];
-	}
-
-	// SINK 1: fopen() called with manipulated path
-	FILE *fp = fopen(final_path, "r");
+	// SINK: Vulnerable fopen() call with user-controlled path
+	FILE *fp = fopen(path, "r");
 	if (fp)
 	{
 		fclose(fp);
@@ -340,159 +232,58 @@ try_open_user_path_complex(int sockfd)
 }
 
 /*
- * Complex Dataflow Example 2: Binary Manipulation Path
- * Demonstrates CWE-22 through binary operations and bit manipulation
+ * Complex Path Traversal Example
+ * Demonstrates CWE-22 through multiple path transformations
  */
 static void
-try_open_user_path_binary(int sockfd)
+try_open_user_path_complex(int sockfd)
 {
-	// Initial buffer for user input
 	char path[128];
+	char processed_path[256];
+	char final_path[512];
 	memset(path, 0, sizeof(path));
+	memset(processed_path, 0, sizeof(processed_path));
+	memset(final_path, 0, sizeof(final_path));
 
-	// SOURCE: user-controlled input via read()
-	ssize_t bytes_read = read(sockfd, path, sizeof(path) - 1);
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8081);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: user-controlled input via recv()
+	ssize_t bytes_read = recv(sockfd, path, sizeof(path) - 1, 0);
 	if (bytes_read < 0)
 	{
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not read from socket: %m")));
+				 errmsg("could not receive from socket: %m")));
+	}
+	path[bytes_read] = '\0';
+
+	// Step 1: Normalize path (remove whitespace, etc)
+	normalize_path(path);
+
+	// Step 2: Sanitize path (convert backslashes)
+	sanitize_path(path);
+
+	// Step 3: Join with base directory
+	join_paths(processed_path, sizeof(processed_path), "/var/lib/postgresql", path);
+
+	// Step 4: Validate final path
+	if (!is_valid_path(processed_path))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid path: %s", processed_path)));
 	}
 
-	// Complex dataflow starts here
-	unsigned char binary_path[1024];
-	unsigned char xor_path[1024];
-	unsigned char shifted_path[1024];
-	unsigned char rotated_path[1024];
-	unsigned char masked_path[1024];
-	unsigned char swapped_path[1024];
-	unsigned char permuted_path[1024];
-	unsigned char encoded_path[1024];
-	unsigned char decoded_path[1024];
-	char final_path[512];
-	memset(binary_path, 0, sizeof(binary_path));
-	memset(xor_path, 0, sizeof(xor_path));
-	memset(shifted_path, 0, sizeof(shifted_path));
-	memset(rotated_path, 0, sizeof(rotated_path));
-	memset(masked_path, 0, sizeof(masked_path));
-	memset(swapped_path, 0, sizeof(swapped_path));
-	memset(permuted_path, 0, sizeof(permuted_path));
-	memset(encoded_path, 0, sizeof(encoded_path));
-	memset(decoded_path, 0, sizeof(decoded_path));
-	memset(final_path, 0, sizeof(final_path));
+	// Copy to final path
+	strncpy(final_path, processed_path, sizeof(final_path) - 1);
+	final_path[sizeof(final_path) - 1] = '\0';
 
-	// Step 1: Convert to binary representation
-	for (int i = 0; path[i]; i++) {
-		for (int j = 0; j < 8; j++) {
-			binary_path[i*8 + j] = (path[i] >> j) & 1;
-		}
-	}
-
-	// Step 2: XOR with alternating pattern
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		xor_path[i] = binary_path[i] ^ ((i % 2) ? 1 : 0);
-	}
-
-	// Step 3: Bit shifting
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		shifted_path[i] = (xor_path[i] << 1) | (xor_path[i] >> 7);
-	}
-
-	// Step 4: Bit rotation
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		rotated_path[i] = (shifted_path[i] << 4) | (shifted_path[i] >> 4);
-	}
-
-	// Step 5: Bit masking
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		masked_path[i] = rotated_path[i] & 0x0F;
-	}
-
-	// Step 6: Bit swapping
-	for (int i = 0; i < strlen(path) * 8; i += 2) {
-		if (i + 1 < strlen(path) * 8) {
-			swapped_path[i] = masked_path[i + 1];
-			swapped_path[i + 1] = masked_path[i];
-		}
-	}
-
-	// Step 7: Bit permutation
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		permuted_path[i] = swapped_path[(i * 7) % (strlen(path) * 8)];
-	}
-
-	// Step 8: Bit encoding
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		encoded_path[i] = permuted_path[i] ^ 0xAA;
-	}
-
-	// Step 9: Bit decoding
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		decoded_path[i] = encoded_path[i] ^ 0xAA;
-	}
-
-	// Step 10: Bit unpermutation
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		permuted_path[i] = decoded_path[(i * 7) % (strlen(path) * 8)];
-	}
-
-	// Step 11: Bit unswapping
-	for (int i = 0; i < strlen(path) * 8; i += 2) {
-		if (i + 1 < strlen(path) * 8) {
-			swapped_path[i] = permuted_path[i + 1];
-			swapped_path[i + 1] = permuted_path[i];
-		}
-	}
-
-	// Step 12: Bit unmasking
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		masked_path[i] = swapped_path[i] | 0xF0;
-	}
-
-	// Step 13: Bit unrotation
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		rotated_path[i] = (masked_path[i] >> 4) | (masked_path[i] << 4);
-	}
-
-	// Step 14: Bit unshifting
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		shifted_path[i] = (rotated_path[i] >> 1) | (rotated_path[i] << 7);
-	}
-
-	// Step 15: Bit unXOR
-	for (int i = 0; i < strlen(path) * 8; i++) {
-		xor_path[i] = shifted_path[i] ^ ((i % 2) ? 1 : 0);
-	}
-
-	// Step 16: Convert back to bytes
-	for (int i = 0; i < strlen(path); i++) {
-		unsigned char byte = 0;
-		for (int j = 0; j < 8; j++) {
-			byte |= (xor_path[i*8 + j] & 1) << j;
-		}
-		final_path[i] = byte;
-	}
-
-	// Step 17: Add checksum
-	unsigned char sum = 0;
-	for (int i = 0; final_path[i]; i++)
-		sum += final_path[i];
-	final_path[strlen(path)] = sum;
-
-	// Step 18: Remove checksum
-	final_path[strlen(path)] = '\0';
-
-	// Step 19: Verify path integrity
-	for (int i = 0; final_path[i]; i++) {
-		if (final_path[i] != path[i]) {
-			final_path[i] = path[i];
-		}
-	}
-
-	// Step 20: Final path preparation
-	final_path[strlen(path)] = '\0';
-
-	// SINK 2: open() called with manipulated path
+	// SINK: Vulnerable open() call with processed user-controlled path
 	int fd = open(final_path, O_RDONLY);
 	if (fd >= 0)
 	{
@@ -522,8 +313,8 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 	{
 		// Simulate a socket descriptor
 		int sockfd = 4;
+		try_open_user_path(sockfd);
 		try_open_user_path_complex(sockfd);
-		try_open_user_path_binary(sockfd);
 	}
 
 	snprintf(destination, MAXPGPATH, "%s/%s", archive_directory, file);

