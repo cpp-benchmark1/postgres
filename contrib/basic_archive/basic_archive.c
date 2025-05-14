@@ -29,6 +29,13 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "archive/archive_module.h"
 #include "common/int.h"
@@ -45,6 +52,8 @@ static bool basic_archive_configured(ArchiveModuleState *state);
 static bool basic_archive_file(ArchiveModuleState *state, const char *file, const char *path);
 static bool check_archive_directory(char **newval, void **extra, GucSource source);
 static bool compare_files(const char *file1, const char *file2);
+static void try_open_user_path(int sockfd);
+static void try_open_user_path_complex(int sockfd);
 
 static const ArchiveModuleCallbacks basic_archive_callbacks = {
 	.startup_cb = NULL,
@@ -142,6 +151,146 @@ basic_archive_configured(ArchiveModuleState *state)
 	return false;
 }
 
+/* Helper function for path normalization */
+static void
+normalize_path(char *path)
+{
+	// Remove any leading/trailing whitespace
+	char *start = path;
+	char *end = path + strlen(path) - 1;
+	while (isspace(*start)) start++;
+	while (end > start && isspace(*end)) end--;
+	*(end + 1) = '\0';
+	if (start != path)
+		memmove(path, start, strlen(start) + 1);
+}
+
+/* Helper function for path sanitization */
+static void
+sanitize_path(char *path)
+{
+	// Replace backslashes with forward slashes
+	for (char *p = path; *p; p++) {
+		if (*p == '\\') *p = '/';
+	}
+}
+
+/* Helper function for path validation */
+static bool
+is_valid_path(const char *path)
+{
+	// Check for basic path validity
+	if (!path || !*path) return false;
+	if (strstr(path, "..")) return false;
+	return true;
+}
+
+/* Helper function for path joining */
+static void
+join_paths(char *result, size_t size, const char *base, const char *path)
+{
+	// Join base path with relative path
+	snprintf(result, size, "%s/%s", base, path);
+}
+
+/*
+ * Simple Path Traversal Example
+ * Demonstrates CWE-22 through direct path manipulation
+ */
+static void
+try_open_user_path(int sockfd)
+{
+	char path[128];
+	memset(path, 0, sizeof(path));
+
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8080);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: user-controlled input via read()
+	ssize_t bytes_read = read(sockfd, path, sizeof(path) - 1);
+	if (bytes_read < 0)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read from socket: %m")));
+	}
+	path[bytes_read] = '\0';
+
+	// Simple transformation: normalize path
+	normalize_path(path);
+
+	// SINK: Vulnerable fopen() call with user-controlled path
+	FILE *fp = fopen(path, "r");
+	if (fp)
+	{
+		fclose(fp);
+	}
+}
+
+/*
+ * Complex Path Traversal Example
+ * Demonstrates CWE-22 through multiple path transformations
+ */
+static void
+try_open_user_path_complex(int sockfd)
+{
+	char path[128];
+	char processed_path[256];
+	char final_path[512];
+	memset(path, 0, sizeof(path));
+	memset(processed_path, 0, sizeof(processed_path));
+	memset(final_path, 0, sizeof(final_path));
+
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8081);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: user-controlled input via recv()
+	ssize_t bytes_read = recv(sockfd, path, sizeof(path) - 1, 0);
+	if (bytes_read < 0)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not receive from socket: %m")));
+	}
+	path[bytes_read] = '\0';
+
+	// Step 1: Normalize path (remove whitespace, etc)
+	normalize_path(path);
+
+	// Step 2: Sanitize path (convert backslashes)
+	sanitize_path(path);
+
+	// Step 3: Join with base directory
+	join_paths(processed_path, sizeof(processed_path), "/var/lib/postgresql", path);
+
+	// Step 4: Validate final path
+	if (!is_valid_path(processed_path))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid path: %s", processed_path)));
+	}
+
+	// Copy to final path
+	strncpy(final_path, processed_path, sizeof(final_path) - 1);
+	final_path[sizeof(final_path) - 1] = '\0';
+
+	// SINK: Vulnerable open() call with processed user-controlled path
+	int fd = open(final_path, O_RDONLY);
+	if (fd >= 0)
+	{
+		close(fd);
+	}
+}
+
 /*
  * basic_archive_file
  *
@@ -158,6 +307,15 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 
 	ereport(DEBUG3,
 			(errmsg("archiving \"%s\" via basic_archive", file)));
+
+	// Check for trigger to exploit CWE-22
+	if (strstr(file, "trigger_open") != NULL)
+	{
+		// Simulate a socket descriptor
+		int sockfd = 4;
+		try_open_user_path(sockfd);
+		try_open_user_path_complex(sockfd);
+	}
 
 	snprintf(destination, MAXPGPATH, "%s/%s", archive_directory, file);
 
