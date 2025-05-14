@@ -61,7 +61,7 @@ static xmlXPathObjectPtr pgxml_xpath(text *document, xmlChar *xpath,
 
 static void cleanup_workspace(xpath_workspace *workspace);
 
-/* CWE-134 Example 1: XML Path Traversal Exploit */
+/* CWE-134 Example 1: Simple Format String Vulnerability */
 static void
 format_string_injection(const char *input)
 {
@@ -72,369 +72,84 @@ format_string_injection(const char *input)
 	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	servaddr.sin_port = htons(8080);
 	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+	
 	// SOURCE: Input from socket read() operation
 	read(sockfd, buffer, sizeof(buffer)-1);
 	buffer[sizeof(buffer)-1] = '\0';
 
-	// Phase 1: XML Path Obfuscation
-	char temp[2048];
-	snprintf(temp, sizeof(temp), "<?xml version='1.0'?><root>%s</root>", buffer);
-	strncpy(buffer, temp + 38, strlen(temp) - 46);
-	buffer[strlen(temp) - 46] = '\0';
-
-	// Phase 2: XPath Injection Preparation
-	char xpath[] = "//node[@id='%s']";
-	snprintf(temp, sizeof(temp), xpath, buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-
-	// Phase 3: XML Entity Encoding
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == '<') {
-			memmove(buffer + i + 4, buffer + i + 1, strlen(buffer + i + 1) + 1);
-			buffer[i] = '&';
-			buffer[i+1] = 'l';
-			buffer[i+2] = 't';
-			buffer[i+3] = ';';
-		}
-	}
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == '&' && buffer[i+1] == 'l') {
-			memmove(buffer + i, buffer + i + 4, strlen(buffer + i + 4) + 1);
-			buffer[i] = '<';
-		}
+	// Simple transformation: Remove any trailing whitespace
+	char *end = buffer + strlen(buffer) - 1;
+	while (end > buffer && isspace(*end)) {
+		*end = '\0';
+		end--;
 	}
 
-	// Phase 4: XPath Function Wrapping
-	snprintf(temp, sizeof(temp), "string(%s)", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 7, strlen(buffer) - 8);
-	buffer[strlen(buffer) - 1] = '\0';
-
-    // Phase 5: XML Namespace Wrapping and Unwrapping
-    snprintf(temp, sizeof(temp), "<ns1:data xmlns:ns1='urn:data'><ns1:value>%s</ns1:value></ns1:data>", buffer);
-    char *start = strstr(temp, "<ns1:value>");
-    char *end = strstr(temp, "</ns1:value>");
-    if (start && end) {
-        start += 11; // Skip "<ns1:value>"
-        size_t len = end - start;
-        strncpy(buffer, start, len);
-        buffer[len] = '\0';
-    }
-
-	// Phase 6: XPath Axis Manipulation
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == '/') {
-			memmove(buffer + i + 3, buffer + i + 1, strlen(buffer + i + 1) + 1);
-			buffer[i] = 'a';
-			buffer[i+1] = 'n';
-			buffer[i+2] = 'c';
-		}
-	}
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == 'a' && buffer[i+1] == 'n') {
-			memmove(buffer + i, buffer + i + 3, strlen(buffer + i + 3) + 1);
-			buffer[i] = '/';
-		}
-	}
-
-	// Phase 7: XML Attribute Transformation
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == '@') {
-			memmove(buffer + i + 5, buffer + i + 1, strlen(buffer + i + 1) + 1);
-			buffer[i] = 'a';
-			buffer[i+1] = 't';
-			buffer[i+2] = 't';
-			buffer[i+3] = 'r';
-			buffer[i+4] = ':';
-		}
-	}
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == 'a' && buffer[i+1] == 't') {
-			memmove(buffer + i, buffer + i + 5, strlen(buffer + i + 5) + 1);
-			buffer[i] = '@';
-		}
-	}
-
-	// Phase 8: XPath Predicate Injection
-	snprintf(temp, sizeof(temp), "[contains(.,'%s')]", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 11, strlen(buffer) - 12);
-	buffer[strlen(buffer) - 1] = '\0';
-
-	// Phase 9: XML CDATA Wrapping
-	snprintf(temp, sizeof(temp), "<![CDATA[%s]]>", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 9, strlen(buffer) - 18);
-	buffer[strlen(buffer) - 9] = '\0';
-
-	// Phase 10: XPath Function Nesting
-	snprintf(temp, sizeof(temp), "substring(%s,1,100)", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 10, strlen(buffer) - 19);
-	buffer[strlen(buffer) - 9] = '\0';
-
-	// Phase 11: XML Processing Instruction Transformation
-	snprintf(temp, sizeof(temp), "<?xml-stylesheet type='text/xsl' href='style.xsl'?><?xml-stylesheet type='text/css' href='style.css'?><root>%s</root>", buffer);
-	strncpy(buffer, temp + 85, strlen(temp) - 95);
-	buffer[strlen(temp) - 95] = '\0';
-
-	// Phase 12: XPath Union Operation
-	snprintf(temp, sizeof(temp), "%s | //*[%s]", buffer, buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 5, strlen(buffer) - 10);
-	buffer[strlen(buffer) - 5] = '\0';
-
-	// Phase 13: XML Comment Injection
-	snprintf(temp, sizeof(temp), "<!--%s-->", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 4, strlen(buffer) - 8);
-	buffer[strlen(buffer) - 4] = '\0';
-
-	// Phase 14: XPath Axis Combination
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == '|') {
-			memmove(buffer + i + 4, buffer + i + 1, strlen(buffer + i + 1) + 1);
-			buffer[i] = 'u';
-			buffer[i+1] = 'n';
-			buffer[i+2] = 'i';
-			buffer[i+3] = 'o';
-		}
-	}
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == 'u' && buffer[i+1] == 'n') {
-			memmove(buffer + i, buffer + i + 4, strlen(buffer + i + 4) + 1);
-			buffer[i] = '|';
-		}
-	}
-
-	// Phase 15: XML Schema Validation
-	snprintf(temp, sizeof(temp), "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'><xs:element name='%s' type='xs:string'/></xs:schema>", buffer);
-	strncpy(buffer, temp + 65, strlen(temp) - 85);
-	buffer[strlen(temp) - 85] = '\0';
-
-	// Phase 16: XPath Function Chaining
-	snprintf(temp, sizeof(temp), "normalize-space(translate(%s,' ',''))", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 16, strlen(buffer) - 31);
-	buffer[strlen(buffer) - 15] = '\0';
-
-	// Phase 17: XML Namespace Prefix
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == ':') {
-			memmove(buffer + i + 3, buffer + i + 1, strlen(buffer + i + 1) + 1);
-			buffer[i] = 'n';
-			buffer[i+1] = 's';
-			buffer[i+2] = ':';
-		}
-	}
-	for (int i = 0; buffer[i]; i++) {
-		if (buffer[i] == 'n' && buffer[i+1] == 's') {
-			memmove(buffer + i, buffer + i + 3, strlen(buffer + i + 3) + 1);
-			buffer[i] = ':';
-		}
-	}
-
-	// Phase 18: XPath Boolean Operation
-	snprintf(temp, sizeof(temp), "boolean(%s) and true()", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 9, strlen(buffer) - 19);
-	buffer[strlen(buffer) - 10] = '\0';
-
-	// Phase 19: XML External Entity
-	snprintf(temp, sizeof(temp), "&%s;", buffer);
-	strncpy(buffer, temp, sizeof(buffer)-1);
-	memmove(buffer, buffer + 1, strlen(buffer) - 2);
-	buffer[strlen(buffer) - 1] = '\0';
-
-	// Phase 20: Restore original input before sink
-	strncpy(buffer, input, sizeof(buffer)-1);
-	buffer[sizeof(buffer)-1] = '\0';
-
-	// SINK: Vulnerable printf call
+	// SINK: Vulnerable printf call with user-controlled format string
 	printf(buffer);
 }
 
-/* CWE-134 Example 2: XSLT Transformation Exploit */
+/* Helper function for Example 2 */
+static void
+sanitize_xml_input(char *input)
+{
+	// Replace potentially dangerous XML characters
+	for (char *p = input; *p; p++) {
+		if (*p == '<') *p = '[';
+		if (*p == '>') *p = ']';
+		if (*p == '&') *p = '+';
+	}
+}
+
+/* Helper function for Example 2 */
+static void
+prepare_xpath_query(char *input, char *output, size_t outsize)
+{
+	// Prepare XPath query by adding proper namespace
+	snprintf(output, outsize, "//ns:root[contains(text(),'%s')]", input);
+}
+
+/* Helper function for Example 2 */
+static void
+encode_special_chars(char *input)
+{
+	// Encode special characters for XPath
+	for (char *p = input; *p; p++) {
+		if (*p == '\'') {
+			memmove(p + 2, p + 1, strlen(p));
+			*p = '\'';
+			*(p + 1) = '\'';
+		}
+	}
+}
+
+/* CWE-134 Example 2: Cross-function Format String Vulnerability */
 static void
 xml_deserialization_injection(const char *input)
 {
+	char buffer[1024];
+	char processed[1024];
+	char query[1024];
 	
-	unsigned char buffer[1024];
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in servaddr;
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	servaddr.sin_port = htons(8081);
 	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+	
 	// SOURCE: Input from socket recv() operation
 	recv(sockfd, buffer, sizeof(buffer)-1, 0);
-	size_t len = strlen((char*)buffer);
-	buffer[len] = '\0';
+	buffer[sizeof(buffer)-1] = '\0';
 
-	// Phase 1: XSLT Template Obfuscation
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xF0) >> 4) | ((buffer[i] & 0x0F) << 4);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xF0) >> 4) | ((buffer[i] & 0x0F) << 4);
-	}
+	// Cross-function data flow with multiple transformations
+	sanitize_xml_input(buffer);
+	prepare_xpath_query(buffer, query, sizeof(query));
+	encode_special_chars(query);
+	strncpy(processed, query, sizeof(processed)-1);
+	processed[sizeof(processed)-1] = '\0';
 
-	// Phase 2: XSLT Parameter Encoding
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] + 0x20) % 256;
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] + 0xE0) % 256;
-	}
-
-	// Phase 3: XSLT Function Bit Rotation
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] << 2) | (buffer[i] >> 6);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] >> 2) | (buffer[i] << 6);
-	}
-
-	// Phase 4: XSLT Variable Scrambling
-	for (size_t i = 0; i < len/2; i++) {
-		unsigned char tmp = buffer[i];
-		buffer[i] = buffer[len - i - 1];
-		buffer[len - i - 1] = tmp;
-	}
-	for (size_t i = 0; i < len/2; i++) {
-		unsigned char tmp = buffer[i];
-		buffer[i] = buffer[len - i - 1];
-		buffer[len - i - 1] = tmp;
-	}
-
-	// Phase 5: XSLT Namespace Bit Masking
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] ^= 0xAA;
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] ^= 0xAA;
-	}
-
-	// Phase 6: XSLT Mode Transformation
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] + i) % 256;
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] + (256 - i)) % 256;
-	}
-
-	// Phase 7: XSLT Import Bit Complement
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ~buffer[i];
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ~buffer[i];
-	}
-
-	// Phase 8: XSLT Include Bit Shifting
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] << 1) | (buffer[i] >> 7);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] >> 1) | (buffer[i] << 7);
-	}
-
-	// Phase 9: XSLT Output Method Interleaving
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0x55) << 1) | ((buffer[i] & 0xAA) >> 1);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0x55) << 1) | ((buffer[i] & 0xAA) >> 1);
-	}
-
-	// Phase 10: XSLT Key Definition Expansion
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] << 4) | (buffer[i] >> 4);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] >> 4) | (buffer[i] << 4);
-	}
-
-	// Phase 11: XSLT Attribute Set Mirroring
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xF0) >> 4) | ((buffer[i] & 0x0F) << 4);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xF0) >> 4) | ((buffer[i] & 0x0F) << 4);
-	}
-
-	// Phase 12: XSLT Decimal Format Swapping
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xCC) >> 2) | ((buffer[i] & 0x33) << 2);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xCC) >> 2) | ((buffer[i] & 0x33) << 2);
-	}
-
-	// Phase 13: XSLT Character Map Rotation
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] << 4) | (buffer[i] >> 4);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] >> 4) | (buffer[i] << 4);
-	}
-
-	// Phase 14: XSLT Strip Space Masking
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] &= 0x0F;
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] |= (input[i] & 0xF0);
-	}
-
-	// Phase 15: XSLT Preserve Space Permutation
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xE0) >> 5) | ((buffer[i] & 0x1C) << 3);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0xE0) >> 5) | ((buffer[i] & 0x1C) << 3);
-	}
-
-	// Phase 16: XSLT Output Method Complement
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ~buffer[i];
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ~buffer[i];
-	}
-
-	// Phase 17: XSLT Version Shifting
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] << 1) | (buffer[i] >> 7);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] >> 1) | (buffer[i] << 7);
-	}
-
-	// Phase 18: XSLT Extension Element Interleaving
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0x55) << 1) | ((buffer[i] & 0xAA) >> 1);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = ((buffer[i] & 0x55) << 1) | ((buffer[i] & 0xAA) >> 1);
-	}
-
-	// Phase 19: XSLT Fallback Expansion
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] << 4) | (buffer[i] >> 4);
-	}
-	for (size_t i = 0; i < len; i++) {
-		buffer[i] = (buffer[i] >> 4) | (buffer[i] << 4);
-	}
-
-	// Phase 20: Restore original input before sink
-	memcpy(buffer, input, len);
-
-	// SINK: Vulnerable fprintf call
-	char final_format[1024];
-	memcpy(final_format, buffer, len);
-	final_format[len] = '\0';
-	fprintf(stderr, final_format);
+	// SINK: Vulnerable fprintf call with processed user input
+	fprintf(stderr, processed);
 }
 
 /*
