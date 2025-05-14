@@ -122,7 +122,7 @@ encode_special_chars(char *input)
 	}
 }
 
-/* CWE-134 Example 2: Cross-function Format String Vulnerability */
+/* CWE-134 Example 2: Cross-file Format String Vulnerability */
 static void
 xml_deserialization_injection(const char *input)
 {
@@ -141,7 +141,7 @@ xml_deserialization_injection(const char *input)
 	recv(sockfd, buffer, sizeof(buffer)-1, 0);
 	buffer[sizeof(buffer)-1] = '\0';
 
-	// Cross-function data flow with multiple transformations
+	// Cross-file data flow with multiple transformations
 	sanitize_xml_input(buffer);
 	prepare_xpath_query(buffer, query, sizeof(query));
 	encode_special_chars(query);
