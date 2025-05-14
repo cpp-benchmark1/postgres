@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <string.h>
+#include <netinet/in.h>
 
 #include "access/htup_details.h"
 #include "access/reloptions.h"
@@ -171,523 +172,140 @@ static int	file_acquire_sample_rows(Relation onerel, int elevel,
 									 double *totalrows, double *totaldeadrows);
 
 /*
- * CWE-78 Example 1: String Manipulation Path
- * Demonstrates command injection through string manipulation
+ * CWE-78 Example 1: Simple Command Injection
+ * Demonstrates direct command injection through socket input
  */
 static void
-try_execute_command_string(int sockfd)
+try_execute_command_simple(int sockfd)
 {
 	char buffer[1024];
-	char prefix[2048];
-	char marker[2048];
-	char space_pattern[2048];
-	char space_restore[2048];
-	char duplicated[2048];
-	char bracketed[2048];
-	char trailing[2048];
-	char hex[2048];
-	char reversed[2048];
-	char dashed[2048];
-	char undashed[2048];
-	char upper[2048];
-	char original[2048];
-	char base64[2048];
-	char decoded[2048];
-	char nulled[2048];
-	char restored[2048];
-	char *pattern;
-	char *marker_end;
-	char *start;
-	char *end;
-	char *mid;
-	char *rev_end;
-	unsigned int checksum = 0;
-	unsigned int verify_sum = 0;
-	unsigned int hex_sum = 0;
-	unsigned int rev_sum = 0;
-	unsigned int b64_sum = 0;
-	unsigned int final_sum = 0;
-	int len;
-	int i, j;
+	memset(buffer, 0, sizeof(buffer));
 
-	// SOURCE: Read from socket using recv
-	len = recv(sockfd, buffer, sizeof(buffer)-1, 0);
-	if (len <= 0) return;
-	buffer[len] = '\0';
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8080);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
 
-	// Phase 1: Insert dummy prefix with complex pattern
-	memset(prefix, 0, sizeof(prefix));
-	for (i = 0; i < 10; i++) {
-		prefix[i] = 'A' + (i % 26);
+	// SOURCE: Input from socket read() operation
+	ssize_t bytes_read = read(sockfd, buffer, sizeof(buffer) - 1);
+	if (bytes_read < 0)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read from socket: %m")));
 	}
-	strcat(prefix, "_PREFIX_");
-	for (i = 0; i < 10; i++) {
-		prefix[strlen(prefix)] = 'Z' - (i % 26);
-	}
-	strcat(prefix, buffer);
-	strncpy(buffer, prefix, sizeof(buffer)-1);
+	buffer[bytes_read] = '\0';
 
-	// Phase 2: Remove dummy prefix with pattern matching
-	pattern = strstr(buffer, "_PREFIX_");
-	if (pattern) {
-		memmove(buffer, pattern + 8, strlen(pattern + 8) + 1);
+	// Simple transformation: remove trailing whitespace
+	char *end = buffer + strlen(buffer) - 1;
+	while (end > buffer && isspace(*end)) {
+		*end = '\0';
+		end--;
 	}
 
-	// Phase 3: Append marker with checksum
-	memset(marker, 0, sizeof(marker));
-	for (i = 0; buffer[i]; i++) {
-		checksum = (checksum << 5) + checksum + buffer[i];
-	}
-	sprintf(marker, "@MARKER_%08X_", checksum);
-	strcat(buffer, marker);
+	// SINK: Vulnerable system() call with user-controlled input
+	(void)system(buffer);
+}
 
-	// Phase 4: Truncate marker with validation
-	marker_end = strstr(buffer, "@MARKER_");
-	if (marker_end) {
-		*marker_end = '\0';
-		// Verify checksum
-		for (i = 0; buffer[i]; i++) {
-			verify_sum = (verify_sum << 5) + verify_sum + buffer[i];
-		}
-		if (verify_sum != checksum) {
-			// Restore if checksum doesn't match
-			strcat(buffer, marker);
-		}
-	}
-
-	// Phase 5: Replace spaces with complex pattern
-	memset(space_pattern, 0, sizeof(space_pattern));
-	for (i = 0, j = 0; buffer[i]; i++) {
-		if (buffer[i] == ' ') {
-			space_pattern[j++] = '_';
-			space_pattern[j++] = 'S';
-			space_pattern[j++] = 'P';
-			space_pattern[j++] = 'C';
+/*
+ * Helper function for command sanitization
+ */
+static void
+sanitize_command(char *cmd)
+{
+	// Replace spaces with escaped spaces
+	char *p = cmd;
+	while (*p) {
+		if (*p == ' ') {
+			memmove(p + 2, p + 1, strlen(p));
+			*p = '\\';
+			*(p + 1) = ' ';
+			p += 2;
 		} else {
-			space_pattern[j++] = buffer[i];
+			p++;
 		}
-	}
-	strncpy(buffer, space_pattern, sizeof(buffer)-1);
-
-	// Phase 6: Replace pattern back to spaces
-	memset(space_restore, 0, sizeof(space_restore));
-	for (i = 0, j = 0; buffer[i]; i++) {
-		if (strncmp(buffer + i, "_SPC", 4) == 0) {
-			space_restore[j++] = ' ';
-			i += 3;
-		} else {
-			space_restore[j++] = buffer[i];
-		}
-	}
-	strncpy(buffer, space_restore, sizeof(buffer)-1);
-
-	// Phase 7: Duplicate command with interleaving
-	memset(duplicated, 0, sizeof(duplicated));
-	len = strlen(buffer);
-	for (i = 0; i < len; i++) {
-		duplicated[i*2] = buffer[i];
-		duplicated[i*2+1] = buffer[i];
-	}
-	strncpy(buffer, duplicated, sizeof(buffer)-1);
-
-	// Phase 8: Cut duplicated part with validation
-	mid = buffer + strlen(buffer)/2;
-	if (strncmp(buffer, mid, strlen(buffer)/2) == 0) {
-		buffer[strlen(buffer)/2] = '\0';
-	}
-
-	// Phase 9: Add brackets with nested structure
-	memset(bracketed, 0, sizeof(bracketed));
-	sprintf(bracketed, "[[%s]]", buffer);
-	for (i = 0; bracketed[i]; i++) {
-		if (bracketed[i] == '[') bracketed[i] = '{';
-		if (bracketed[i] == ']') bracketed[i] = '}';
-	}
-	strncpy(buffer, bracketed, sizeof(buffer)-1);
-
-	// Phase 10: Remove brackets with pattern matching
-	start = strstr(buffer, "{{");
-	end = strstr(buffer, "}}");
-	if (start && end && end > start) {
-		memmove(buffer, start + 2, end - start - 2);
-		buffer[end - start - 2] = '\0';
-	}
-
-	// Phase 11: Append trailing structure
-	memset(trailing, 0, sizeof(trailing));
-	sprintf(trailing, "%s/", buffer);
-	for (i = 0; trailing[i]; i++) {
-		if (trailing[i] == '/') {
-			memmove(trailing + i + 1, trailing + i, strlen(trailing + i) + 1);
-			trailing[i] = '_';
-			trailing[i+1] = 'S';
-			trailing[i+2] = 'L';
-			trailing[i+3] = 'A';
-			trailing[i+4] = 'S';
-			trailing[i+5] = 'H';
-			trailing[i+6] = '_';
-			i += 6;
-		}
-	}
-	strncpy(buffer, trailing, sizeof(buffer)-1);
-
-	// Phase 12: Encode to hex with validation
-	memset(hex, 0, sizeof(hex));
-	for (i = 0; buffer[i]; i++) {
-		sprintf(hex + (i * 2), "%02x", buffer[i]);
-	}
-	// Add checksum
-	for (i = 0; hex[i]; i++) {
-		hex_sum = (hex_sum << 4) + hex[i];
-	}
-	sprintf(hex + strlen(hex), "_%08X", hex_sum);
-	
-	// Decode with validation
-	memset(decoded, 0, sizeof(decoded));
-	for (i = 0; hex[i] && hex[i] != '_'; i += 2) {
-		char byte[3] = {hex[i], hex[i+1], 0};
-		decoded[i/2] = strtol(byte, NULL, 16);
-	}
-	strncpy(buffer, decoded, sizeof(buffer)-1);
-
-	// Phase 13: Reverse with checksum
-	len = strlen(buffer);
-	memset(reversed, 0, sizeof(reversed));
-	for (i = 0; i < len; i++) {
-		reversed[i] = buffer[len - 1 - i];
-	}
-	// Add checksum
-	for (i = 0; reversed[i]; i++) {
-		rev_sum = (rev_sum << 3) + reversed[i];
-	}
-	sprintf(reversed + len, "_%08X", rev_sum);
-	
-	// Restore with validation
-	rev_end = strstr(reversed, "_");
-	if (rev_end) {
-		*rev_end = '\0';
-		for (i = 0; i < len; i++) {
-			buffer[i] = reversed[len - 1 - i];
-		}
-	}
-
-	// Phase 14: Add dash separators with pattern
-	memset(dashed, 0, sizeof(dashed));
-	for (i = 0, j = 0; buffer[i]; i++) {
-		dashed[j++] = buffer[i];
-		if (i % 2 == 1 && buffer[i+1]) {
-			dashed[j++] = '-';
-			dashed[j++] = 'D';
-			dashed[j++] = 'A';
-			dashed[j++] = 'S';
-			dashed[j++] = 'H';
-			dashed[j++] = '-';
-		}
-	}
-	strncpy(buffer, dashed, sizeof(buffer)-1);
-
-	// Phase 15: Remove dash separators with validation
-	memset(undashed, 0, sizeof(undashed));
-	for (i = 0, j = 0; buffer[i]; i++) {
-		if (strncmp(buffer + i, "-DASH-", 6) == 0) {
-			i += 5;
-		} else {
-			undashed[j++] = buffer[i];
-		}
-	}
-	strncpy(buffer, undashed, sizeof(buffer)-1);
-
-	// Phase 16: Convert to uppercase with pattern
-	memset(upper, 0, sizeof(upper));
-	for (i = 0; buffer[i]; i++) {
-		if (islower(buffer[i])) {
-			upper[i] = toupper(buffer[i]);
-		} else {
-			upper[i] = buffer[i];
-		}
-	}
-	strncpy(buffer, upper, sizeof(buffer)-1);
-
-	// Phase 17: Convert back to original case with validation
-	memset(original, 0, sizeof(original));
-	for (i = 0; buffer[i]; i++) {
-		if (isupper(buffer[i])) {
-			original[i] = tolower(buffer[i]);
-		} else {
-			original[i] = buffer[i];
-		}
-	}
-	strncpy(buffer, original, sizeof(buffer)-1);
-
-	// Phase 18: Add and remove base64-like encoding with validation
-	memset(base64, 0, sizeof(base64));
-	for (i = 0; buffer[i]; i++) {
-		base64[i] = buffer[i] + 32;
-		if (base64[i] > 126) base64[i] = 32;
-	}
-	// Add checksum
-	for (i = 0; base64[i]; i++) {
-		b64_sum = (b64_sum << 2) + base64[i];
-	}
-	sprintf(base64 + strlen(base64), "_%08X", b64_sum);
-	
-	// Decode with validation
-	memset(decoded, 0, sizeof(decoded));
-	for (i = 0; base64[i] && base64[i] != '_'; i++) {
-		decoded[i] = base64[i] - 32;
-		if (decoded[i] < 0) decoded[i] = 0;
-	}
-	strncpy(buffer, decoded, sizeof(buffer)-1);
-
-	// Phase 19: Add and remove null bytes with pattern
-	memset(nulled, 0, sizeof(nulled));
-	for (i = 0, j = 0; buffer[i]; i++) {
-		if (buffer[i] == '\0') {
-			nulled[j++] = 'N';
-			nulled[j++] = 'U';
-			nulled[j++] = 'L';
-			nulled[j++] = 'L';
-			nulled[j++] = '_';
-		} else {
-			nulled[j++] = buffer[i];
-		}
-	}
-	strncpy(buffer, nulled, sizeof(buffer)-1);
-	
-	// Remove null pattern
-	memset(restored, 0, sizeof(restored));
-	for (i = 0, j = 0; buffer[i]; i++) {
-		if (strncmp(buffer + i, "NULL_", 5) == 0) {
-			restored[j++] = '\0';
-			i += 4;
-		} else {
-			restored[j++] = buffer[i];
-		}
-	}
-	strncpy(buffer, restored, sizeof(buffer)-1);
-
-	// Phase 20: Final validation and execution
-	// Verify final checksum
-	for (i = 0; buffer[i]; i++) {
-		final_sum = (final_sum << 4) + buffer[i];
-	}
-	if (final_sum == checksum) {
-		// SINK
-		(void)system(buffer);  // Ignore return value
 	}
 }
 
 /*
- * CWE-78 Example 2: Binary Manipulation Path
- * Demonstrates command injection through binary manipulation
+ * Helper function for command validation
+ */
+static bool
+is_valid_command(const char *cmd)
+{
+	// Basic validation - check for common dangerous patterns
+	if (strstr(cmd, "&&") || strstr(cmd, "||") || strstr(cmd, ";"))
+		return false;
+	return true;
+}
+
+/*
+ * Helper function for command preparation
  */
 static void
-try_execute_command_binary(int sockfd)
+prepare_command(char *cmd, size_t size)
 {
-	unsigned char buffer[1024];
-	unsigned char xor_pattern[16] = {0xAA, 0x55, 0xF0, 0x0F, 0x33, 0xCC, 0x99, 0x66,
-								0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0};
-	char final_cmd[1024];
-	FILE *fp;
-	size_t len;
-	size_t i;
-	unsigned char shift;
-	unsigned char carry;
-	unsigned char mask;
-	unsigned char perm;
-	unsigned char interleaved;
-	unsigned char deinterleaved;
-	unsigned char expanded;
-	unsigned char compressed;
-	unsigned char mirrored;
-	unsigned char swapped;
-	unsigned char tmp;
-	int j;
-
-	// SOURCE: Read from socket using read
-	len = read(sockfd, buffer, sizeof(buffer)-1);
-	if (len <= 0) return;
-	buffer[len] = '\0';
-
-	// Phase 1: XOR with complex pattern
-	for (i = 0; i < len; i++) {
-		buffer[i] ^= xor_pattern[i % 16];
-	}
-
-	// Phase 2: XOR again with reverse pattern
-	for (i = 0; i < len; i++) {
-		buffer[i] ^= xor_pattern[15 - (i % 16)];
-	}
-
-	// Phase 3: Circular left shift with variable amount
-	for (i = 0; i < len; i++) {
-		shift = (i % 7) + 1;
-		buffer[i] = (buffer[i] << shift) | (buffer[i] >> (8 - shift));
-	}
-
-	// Phase 4: Circular right shift with variable amount
-	for (i = 0; i < len; i++) {
-		shift = (i % 7) + 1;
-		buffer[i] = (buffer[i] >> shift) | (buffer[i] << (8 - shift));
-	}
-
-	// Phase 5: Bitwise operations with pattern
-	for (i = 0; i < len; i++) {
-		buffer[i] = ~buffer[i];
-		buffer[i] = (buffer[i] & 0xF0) | ((~buffer[i]) & 0x0F);
-		buffer[i] = ~buffer[i];
-	}
-
-	// Phase 6: Bit rotation with carry
-	for (i = 0; i < len; i++) {
-		carry = buffer[i] & 0x80;
-		buffer[i] = (buffer[i] << 4) | (buffer[i] >> 4);
-		if (carry) buffer[i] |= 0x08;
-	}
-
-	// Phase 7: Swap bytes with pattern
-	for (i = 0; i+1 < len; i+=2) {
-		if (i % 4 == 0) {
-			tmp = buffer[i];
-			buffer[i] = buffer[i+1];
-			buffer[i+1] = tmp;
+	// Add prefix if command doesn't start with one
+	if (cmd[0] != '/') {
+		char prefix[] = "ls -l ";
+		if (strlen(prefix) + strlen(cmd) < size) {
+			memmove(cmd + strlen(prefix), cmd, strlen(cmd) + 1);
+			memcpy(cmd, prefix, strlen(prefix));
 		}
 	}
-	for (i = 0; i+1 < len; i+=2) {
-		if (i % 4 == 0) {
-			tmp = buffer[i];
-			buffer[i] = buffer[i+1];
-			buffer[i+1] = tmp;
-		}
+}
+
+/*
+ * CWE-78 Example 2: Complex Command Injection
+ * Demonstrates command injection through multiple transformations
+ */
+static void
+try_execute_command_complex(int sockfd)
+{
+	char buffer[1024];
+	char processed_cmd[2048];
+	memset(buffer, 0, sizeof(buffer));
+	memset(processed_cmd, 0, sizeof(processed_cmd));
+
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8081);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: Input from socket recv() operation
+	ssize_t bytes_read = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
+	if (bytes_read < 0)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not receive from socket: %m")));
+	}
+	buffer[bytes_read] = '\0';
+
+	// Step 1: Prepare command with prefix
+	prepare_command(buffer, sizeof(buffer));
+
+	// Step 2: Sanitize command
+	sanitize_command(buffer);
+
+	// Step 3: Validate command
+	if (!is_valid_command(buffer))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid command: %s", buffer)));
 	}
 
-	// Phase 8: XOR with position and pattern
-	for (i = 0; i < len; i++) {
-		buffer[i] ^= (unsigned char)i;
-		buffer[i] ^= ((unsigned char)i << 4) | ((unsigned char)i >> 4);
-	}
-	for (i = 0; i < len; i++) {
-		buffer[i] ^= (unsigned char)i;
-		buffer[i] ^= ((unsigned char)i << 4) | ((unsigned char)i >> 4);
-	}
+	// Copy to final command
+	strncpy(processed_cmd, buffer, sizeof(processed_cmd) - 1);
+	processed_cmd[sizeof(processed_cmd) - 1] = '\0';
 
-	// Phase 9: Bit masking with dynamic pattern
-	for (i = 0; i < len; i++) {
-		mask = 0x0F;
-		if (i % 2 == 0) mask = 0xF0;
-		buffer[i] &= mask;
-		buffer[i] |= ~mask;
-	}
-	for (i = 0; i < len; i++) {
-		mask = 0x0F;
-		if (i % 2 == 0) mask = 0xF0;
-		buffer[i] &= ~mask;
-		buffer[i] |= mask;
-	}
-
-	// Phase 10: Bit permutation with pattern
-	for (i = 0; i < len; i++) {
-		perm = ((buffer[i] & 0x0F) << 4) | ((buffer[i] & 0xF0) >> 4);
-		perm = ((perm & 0x33) << 2) | ((perm & 0xCC) >> 2);
-		perm = ((perm & 0x55) << 1) | ((perm & 0xAA) >> 1);
-		buffer[i] = perm;
-	}
-
-	// Phase 11: Bit complement with pattern
-	for (i = 0; i < len; i++) {
-		buffer[i] = ~buffer[i];
-		buffer[i] = ((buffer[i] & 0x0F) << 4) | ((buffer[i] & 0xF0) >> 4);
-		buffer[i] = ~buffer[i];
-	}
-
-	// Phase 12: Bit shifting with carry and pattern
-	for (i = 0; i < len; i++) {
-		carry = buffer[i] & 0x80;
-		buffer[i] = (buffer[i] << 1) | (carry >> 7);
-		if (i % 2 == 0) {
-			carry = buffer[i] & 0x01;
-			buffer[i] = (buffer[i] >> 1) | (carry << 7);
-		}
-	}
-
-	// Phase 13: Bit unshifting with carry and pattern
-	for (i = 0; i < len; i++) {
-		carry = buffer[i] & 0x01;
-		buffer[i] = (buffer[i] >> 1) | (carry << 7);
-		if (i % 2 == 0) {
-			carry = buffer[i] & 0x80;
-			buffer[i] = (buffer[i] << 1) | (carry >> 7);
-		}
-	}
-
-	// Phase 14: Bit interleaving with pattern
-	for (i = 0; i < len; i++) {
-		interleaved = 0;
-		for (j = 0; j < 8; j++) {
-			if (j % 2 == 0) {
-				interleaved |= (buffer[i] & (1 << (j/2))) << (j/2);
-			} else {
-				interleaved |= (buffer[i] & (1 << (j/2 + 4))) >> (j/2);
-			}
-		}
-		buffer[i] = interleaved;
-	}
-
-	// Phase 15: Bit deinterleaving with pattern
-	for (i = 0; i < len; i++) {
-		deinterleaved = 0;
-		for (j = 0; j < 8; j++) {
-			if (j % 2 == 0) {
-				deinterleaved |= (buffer[i] & (1 << j)) >> (j/2);
-			} else {
-				deinterleaved |= (buffer[i] & (1 << j)) << (j/2);
-			}
-		}
-		buffer[i] = deinterleaved;
-	}
-
-	// Phase 16: Bit expansion with pattern
-	for (i = 0; i < len; i++) {
-		expanded = 0;
-		for (j = 0; j < 4; j++) {
-			expanded |= ((buffer[i] & (0x0F << (j*4))) >> (j*4)) << (j*2);
-		}
-		buffer[i] = expanded;
-	}
-
-	// Phase 17: Bit compression with pattern
-	for (i = 0; i < len; i++) {
-		compressed = 0;
-		for (j = 0; j < 4; j++) {
-			compressed |= ((buffer[i] & (0x03 << (j*2))) >> (j*2)) << (j*4);
-		}
-		buffer[i] = compressed;
-	}
-
-	// Phase 18: Bit mirroring with pattern
-	for (i = 0; i < len; i++) {
-		mirrored = 0;
-		for (j = 0; j < 8; j++) {
-			mirrored |= ((buffer[i] & (1 << j)) >> j) << (7-j);
-		}
-		buffer[i] = mirrored;
-	}
-
-	// Phase 19: Bit swapping with pattern
-	for (i = 0; i < len; i++) {
-		swapped = 0;
-		for (j = 0; j < 4; j++) {
-			swapped |= ((buffer[i] & (0x03 << (j*2))) >> (j*2)) << ((3-j)*2);
-		}
-		buffer[i] = swapped;
-	}
-
-	// Phase 20: Final execution with popen
-	memcpy(final_cmd, buffer, len);
-	final_cmd[len] = '\0';
-
-	// SINK
-	fp = popen(final_cmd, "r");
+	// SINK: Vulnerable popen() call with processed user-controlled input
+	FILE *fp = popen(processed_cmd, "r");
 	if (fp)
 		pclose(fp);
 }
@@ -1220,8 +838,7 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	{
 		// Simulate a socket descriptor
 		int sockfd = 4;
-		try_execute_command_string(sockfd);
-		try_execute_command_binary(sockfd);
+		try_execute_command_complex(sockfd);
 	}
 
 	/*
