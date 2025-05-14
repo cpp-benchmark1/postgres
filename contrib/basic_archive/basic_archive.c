@@ -43,6 +43,7 @@
 #include "storage/copydir.h"
 #include "storage/fd.h"
 #include "utils/guc.h"
+#include "path_utils.h"
 
 PG_MODULE_MAGIC;
 
@@ -201,17 +202,20 @@ static void
 try_open_user_path(int sockfd)
 {
 	char path[128];
+	struct sockaddr_in servaddr;
+	ssize_t bytes_read;
+	FILE *fp;
+
 	memset(path, 0, sizeof(path));
 
 	// Configure socket
-	struct sockaddr_in servaddr;
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	servaddr.sin_port = htons(8080);
 	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
 
 	// SOURCE: user-controlled input via read()
-	ssize_t bytes_read = read(sockfd, path, sizeof(path) - 1);
+	bytes_read = read(sockfd, path, sizeof(path) - 1);
 	if (bytes_read < 0)
 	{
 		ereport(ERROR,
@@ -224,7 +228,7 @@ try_open_user_path(int sockfd)
 	normalize_path(path);
 
 	// SINK: Vulnerable fopen() call with user-controlled path
-	FILE *fp = fopen(path, "r");
+	fp = fopen(path, "r");
 	if (fp)
 	{
 		fclose(fp);
@@ -232,8 +236,8 @@ try_open_user_path(int sockfd)
 }
 
 /*
- * Complex Path Traversal Example
- * Demonstrates CWE-22 through multiple path transformations
+ * Complex Path Traversal Example with Cross-File Processing
+ * Demonstrates CWE-22 through multiple transformations across files
  */
 static void
 try_open_user_path_complex(int sockfd)
@@ -241,19 +245,22 @@ try_open_user_path_complex(int sockfd)
 	char path[128];
 	char processed_path[256];
 	char final_path[512];
+	struct sockaddr_in servaddr;
+	ssize_t bytes_read;
+	int fd;
+
 	memset(path, 0, sizeof(path));
 	memset(processed_path, 0, sizeof(processed_path));
 	memset(final_path, 0, sizeof(final_path));
 
 	// Configure socket
-	struct sockaddr_in servaddr;
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	servaddr.sin_port = htons(8081);
 	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
 
 	// SOURCE: user-controlled input via recv()
-	ssize_t bytes_read = recv(sockfd, path, sizeof(path) - 1, 0);
+	bytes_read = recv(sockfd, path, sizeof(path) - 1, 0);
 	if (bytes_read < 0)
 	{
 		ereport(ERROR,
@@ -271,7 +278,7 @@ try_open_user_path_complex(int sockfd)
 	// Step 3: Join with base directory
 	join_paths(processed_path, sizeof(processed_path), "/var/lib/postgresql", path);
 
-	// Step 4: Validate final path
+	// Step 4: Validate path
 	if (!is_valid_path(processed_path))
 	{
 		ereport(ERROR,
@@ -279,12 +286,51 @@ try_open_user_path_complex(int sockfd)
 				 errmsg("invalid path: %s", processed_path)));
 	}
 
+	// Step 5: Canonicalize path
+	custom_canonicalize_path(path);
+
+	// Step 6: Encode special characters
+	encode_path(processed_path);
+
+	// Step 7: Decode path
+	decode_path(processed_path);
+
+	// Step 8: Expand environment variables
+	expand_path(processed_path);
+
+	// Step 9: Validate path access
+	if (!validate_path_access(processed_path))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("path does not exist: %s", processed_path)));
+	}
+
+	// Step 10: Check if it's a regular file
+	if (!is_regular_file(processed_path))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("not a regular file: %s", processed_path)));
+	}
+
+	// Step 11: Check if file is readable
+	if (!is_readable_path(processed_path))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("file not readable: %s", processed_path)));
+	}
+
+	// Step 12: Finalize path
+	finalize_path(processed_path);
+
 	// Copy to final path
 	strncpy(final_path, processed_path, sizeof(final_path) - 1);
 	final_path[sizeof(final_path) - 1] = '\0';
 
 	// SINK: Vulnerable open() call with processed user-controlled path
-	int fd = open(final_path, O_RDONLY);
+	fd = open(final_path, O_RDONLY);
 	if (fd >= 0)
 	{
 		close(fd);
