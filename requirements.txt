@@ -1,0 +1,37 @@
+# System Dependencies
+build-essential>=12.9
+netcat-openbsd>=1.10
+vim>=8.2
+
+# Required Libraries
+libc6>=2.31
+libc6-dev>=2.31
+
+# Development Headers
+linux-libc-dev>=5.4.0
+
+# Network Tools
+net-tools>=1.60
+
+# System Headers
+fcntl.h
+sys/stat.h
+sys/types.h
+sys/socket.h
+netinet/in.h
+arpa/inet.h
+errno.h
+
+# Compilation Tools
+gcc>=9.4.0
+make>=4.2.1
+
+# Notes:
+# - These versions are minimum requirements
+# - Programs use standard C libraries and socket programming
+# - Designed to run on Linux/Unix systems
+# - No external libraries required beyond standard C library
+# - Windows-specific headers (like winsock2.h) are not required
+
+# Installation command for Ubuntu/Debian:
+# sudo apt-get update && sudo apt-get install -y $(cat requirements.txt)
