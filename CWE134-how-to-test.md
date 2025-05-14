@@ -53,24 +53,30 @@ CREATE EXTENSION xml2;
 1. PostgreSQL with xml2 extension installed
 2. Basic understanding of SQL and XML
 3. Access to a PostgreSQL database
+4. Netcat or similar tool for socket testing
 
-## Example 1: XML Path Traversal Exploit
+## Example 1: Simple Format String Vulnerability
 
-This example demonstrates a format string vulnerability through XML path traversal. The vulnerability is triggered when user input is passed directly to a format string function.
+This example demonstrates a basic format string vulnerability where user input from a socket is directly passed to a format string function after minimal processing.
 
 ### Test Steps
 
-1. Connect to your PostgreSQL database:
+1. Start a netcat listener on port 8080:
+```bash
+nc -l 8080
+```
+
+2. Connect to your PostgreSQL database:
 ```sql
 psql -d your_database
 ```
 
-2. Create the xml2 extension if not already created:
+3. Create the xml2 extension if not already created:
 ```sql
 CREATE EXTENSION xml2;
 ```
 
-3. Test the vulnerability using the xpath_nodeset function:
+4. Test the vulnerability using the xpath_nodeset function:
 ```sql
 SELECT xpath_nodeset(
     '<root>test</root>',
@@ -80,6 +86,11 @@ SELECT xpath_nodeset(
 );
 ```
 
+5. In the netcat window, send the format string payload:
+```
+%n%s%x
+```
+
 The format string `%n%s%x` will:
 - `%n`: Write the number of characters written so far to a memory location
 - `%s`: Read a string from the stack
@@ -87,43 +98,55 @@ The format string `%n%s%x` will:
 
 ### Expected Behavior
 
-The function will attempt to process the format string and may:
-1. Crash the PostgreSQL process
-2. Leak memory contents
-3. Write to arbitrary memory locations
+The function will:
+1. Read the format string from the socket
+2. Remove any trailing whitespace
+3. Pass the input directly to printf()
+4. May crash the PostgreSQL process or leak memory contents
 
-## Example 2: XSLT Transformation Exploit
+## Example 2: Cross-function Format String Vulnerability
 
-This example demonstrates a format string vulnerability through XSLT transformation. The vulnerability occurs when binary data is processed and passed to a format string function.
+This example demonstrates a more complex format string vulnerability where user input passes through multiple transformation functions before reaching the vulnerable sink.
 
 ### Test Steps
 
-1. Connect to your PostgreSQL database:
+1. Start a netcat listener on port 8081:
+```bash
+nc -l 8081
+```
+
+2. Connect to your PostgreSQL database:
 ```sql
 psql -d your_database
 ```
 
-2. Test the vulnerability using the xpath_nodeset function with binary data:
+3. Test the vulnerability using the xpath_nodeset function with XML content:
 ```sql
 SELECT xpath_nodeset(
     '<root>test</root>',
-    E'\\x25\\x6E\\x25\\x73\\x25\\x78',  -- format string injection in hex
+    E'<script>alert(1)</script>',  -- XML injection attempt
     'tag',
     'sep'
 );
 ```
 
-The hex-encoded format string `\x25\x6E\x25\x73\x25\x78` decodes to `%n%s%x` and will:
-- `%n`: Write the number of characters written so far
-- `%s`: Read a string from the stack
-- `%x`: Print a hexadecimal value
+4. In the netcat window, send the format string payload:
+```
+%n%s%x
+```
+
+The input will go through three transformations:
+1. XML character sanitization (`<` → `[`, `>` → `]`, `&` → `+`)
+2. XPath query preparation (wrapping in namespace)
+3. Special character encoding (escaping single quotes)
 
 ### Expected Behavior
 
 The function will:
-1. Process the binary data through 20 transformation phases
-2. Attempt to use the resulting string as a format string
-3. May crash or leak memory contents
+1. Read the format string from the socket
+2. Process it through multiple transformation functions
+3. Pass the processed input to fprintf()
+4. May crash the PostgreSQL process or leak memory contents
 
 ## Security Implications
 
@@ -132,14 +155,16 @@ These examples demonstrate:
 2. Lack of input validation
 3. Potential for memory corruption
 4. Information disclosure risks
+5. Cross-function data flow vulnerabilities
 
 ## Mitigation
 
 To prevent these vulnerabilities:
 1. Always validate and sanitize user input
 2. Use format string functions with proper format specifiers
-3. Implement proper input validation for XML and XSLT processing
+3. Implement proper input validation for XML and XPath processing
 4. Use parameterized queries instead of direct string concatenation
+5. Avoid passing user input directly to format string functions
 
 ## Note
 
