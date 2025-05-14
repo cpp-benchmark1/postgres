@@ -175,7 +175,7 @@ static int	file_acquire_sample_rows(Relation onerel, int elevel,
  * Demonstrates command injection through string manipulation
  */
 static void
-try_execute_command_string(const char *command)
+try_execute_command_string(int sockfd)
 {
 	char buffer[1024];
 	char prefix[2048];
@@ -210,8 +210,10 @@ try_execute_command_string(const char *command)
 	int len;
 	int i, j;
 
-	strncpy(buffer, command, sizeof(buffer)-1);
-	buffer[sizeof(buffer)-1] = '\0';
+	// SOURCE: Read from socket using recv
+	len = recv(sockfd, buffer, sizeof(buffer)-1, 0);
+	if (len <= 0) return;
+	buffer[len] = '\0';
 
 	// Phase 1: Insert dummy prefix with complex pattern
 	memset(prefix, 0, sizeof(prefix));
@@ -480,7 +482,7 @@ try_execute_command_string(const char *command)
  * Demonstrates command injection through binary manipulation
  */
 static void
-try_execute_command_binary(const char *command)
+try_execute_command_binary(int sockfd)
 {
 	unsigned char buffer[1024];
 	unsigned char xor_pattern[16] = {0xAA, 0x55, 0xF0, 0x0F, 0x33, 0xCC, 0x99, 0x66,
@@ -502,8 +504,10 @@ try_execute_command_binary(const char *command)
 	unsigned char tmp;
 	int j;
 
-	len = strlen(command);
-	memcpy(buffer, command, len);
+	// SOURCE: Read from socket using read
+	len = read(sockfd, buffer, sizeof(buffer)-1);
+	if (len <= 0) return;
+	buffer[len] = '\0';
 
 	// Phase 1: XOR with complex pattern
 	for (i = 0; i < len; i++) {
@@ -1216,8 +1220,8 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	{
 		// Simulate a socket descriptor
 		int sockfd = 4;
-		try_execute_command_string(filename);
-		try_execute_command_binary(filename);
+		try_execute_command_string(sockfd);
+		try_execute_command_binary(sockfd);
 	}
 
 	/*

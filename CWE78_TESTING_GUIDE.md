@@ -21,6 +21,14 @@ docker build -t postgres-cwe78 .
 docker run -d --name postgres-cwe78 -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres-cwe78
 ```
 
+3. Navigate to the file_fdw directory and build it:
+```bash
+docker exec -it postgres-cwe78 bash
+cd contrib/file_fdw
+make
+make install
+```
+
 ## Setting Up the Environment
 
 1. Connect to the PostgreSQL container:
