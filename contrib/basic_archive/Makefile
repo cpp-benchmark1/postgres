@@ -4,7 +4,7 @@ MODULE_big = basic_archive
 OBJS = \
 	$(WIN32RES) \
 	basic_archive.o \
-	path_utils.o
+	path_processor.o
 
 EXTENSION = basic_archive
 DATA = basic_archive--1.0.sql

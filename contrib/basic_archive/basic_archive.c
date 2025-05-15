@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
 
 #include "archive/archive_module.h"
 #include "common/int.h"
@@ -43,18 +44,19 @@
 #include "storage/copydir.h"
 #include "storage/fd.h"
 #include "utils/guc.h"
-#include "path_utils.h"
+#include "path_processor.h"
 
 PG_MODULE_MAGIC;
 
 static char *archive_directory = NULL;
+static char *custom_archive_path = NULL;
 
 static bool basic_archive_configured(ArchiveModuleState *state);
 static bool basic_archive_file(ArchiveModuleState *state, const char *file, const char *path);
 static bool check_archive_directory(char **newval, void **extra, GucSource source);
+static bool check_custom_archive_path(char **newval, void **extra, GucSource source);
 static bool compare_files(const char *file1, const char *file2);
-static void try_open_user_path(int sockfd);
-static void try_open_user_path_complex(int sockfd);
+static void try_open_user_path(int dummy);
 
 static const ArchiveModuleCallbacks basic_archive_callbacks = {
 	.startup_cb = NULL,
@@ -66,7 +68,7 @@ static const ArchiveModuleCallbacks basic_archive_callbacks = {
 /*
  * _PG_init
  *
- * Defines the module's GUC.
+ * Defines the module's GUCs.
  */
 void
 _PG_init(void)
@@ -79,6 +81,15 @@ _PG_init(void)
 							   PGC_SIGHUP,
 							   0,
 							   check_archive_directory, NULL, NULL);
+
+	DefineCustomStringVariable("basic_archive.custom_path",
+							   gettext_noop("Custom archive path for special files."),
+							   NULL,
+							   &custom_archive_path,
+							   "",
+							   PGC_SIGHUP,
+							   0,
+							   check_custom_archive_path, NULL, NULL);
 
 	MarkGUCPrefixReserved("basic_archive");
 }
@@ -137,6 +148,18 @@ check_archive_directory(char **newval, void **extra, GucSource source)
 }
 
 /*
+ * check_custom_archive_path
+ *
+ * Accepts any path without validation - this is where the vulnerability begins
+ */
+static bool
+check_custom_archive_path(char **newval, void **extra, GucSource source)
+{
+	// SOURCE: Untrusted input from configuration
+	return true;
+}
+
+/*
  * basic_archive_configured
  *
  * Checks that archive_directory is not blank.
@@ -152,61 +175,20 @@ basic_archive_configured(ArchiveModuleState *state)
 	return false;
 }
 
-/* Helper function for path normalization */
-static void
-normalize_path(char *path)
-{
-	// Remove any leading/trailing whitespace
-	char *start = path;
-	char *end = path + strlen(path) - 1;
-	while (isspace(*start)) start++;
-	while (end > start && isspace(*end)) end--;
-	*(end + 1) = '\0';
-	if (start != path)
-		memmove(path, start, strlen(start) + 1);
-}
-
-/* Helper function for path sanitization */
-static void
-sanitize_path(char *path)
-{
-	// Replace backslashes with forward slashes
-	for (char *p = path; *p; p++) {
-		if (*p == '\\') *p = '/';
-	}
-}
-
-/* Helper function for path validation */
-static bool
-is_valid_path(const char *path)
-{
-	// Check for basic path validity
-	if (!path || !*path) return false;
-	if (strstr(path, "..")) return false;
-	return true;
-}
-
-/* Helper function for path joining */
-static void
-join_paths(char *result, size_t size, const char *base, const char *path)
-{
-	// Join base path with relative path
-	snprintf(result, size, "%s/%s", base, path);
-}
-
 /*
  * Simple Path Traversal Example
  * Demonstrates CWE-22 through direct path manipulation
  */
 static void
-try_open_user_path(int sockfd)
+try_open_user_path(int dummy)
 {
-	char path[128];
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in servaddr;
-	ssize_t bytes_read;
-	FILE *fp;
+	char path[128];
+	char transformed_path[128];
 
 	memset(path, 0, sizeof(path));
+	memset(transformed_path, 0, sizeof(transformed_path));
 
 	// Configure socket
 	servaddr.sin_family = AF_INET;
@@ -214,21 +196,19 @@ try_open_user_path(int sockfd)
 	servaddr.sin_port = htons(8080);
 	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
 
-	// SOURCE: user-controlled input via read()
-	bytes_read = read(sockfd, path, sizeof(path) - 1);
-	if (bytes_read < 0)
-	{
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read from socket: %m")));
+	// SOURCE: receive user input from socket
+	recv(sockfd, path, sizeof(path) - 1, 0);
+
+	// TRANSFORMATION 1: Normalize double slashes to single
+	for (int i = 0, j = 0; path[i] != '\0'; i++) {
+		if (path[i] == '/' && path[i+1] == '/') {
+			continue;  // Skip second slash
+		}
+		transformed_path[j++] = path[i];
 	}
-	path[bytes_read] = '\0';
 
-	// Simple transformation: normalize path
-	normalize_path(path);
-
-	// SINK: Vulnerable fopen() call with user-controlled path
-	fp = fopen(path, "r");
+	// SINK: Vulnerable file operation using user-controlled path
+	FILE *fp = fopen(transformed_path, "r");
 	if (fp)
 	{
 		fclose(fp);
@@ -236,111 +216,10 @@ try_open_user_path(int sockfd)
 }
 
 /*
- * Complex Path Traversal Example with Cross-File Processing
- * Demonstrates CWE-22 through multiple transformations across files
- */
-static void
-try_open_user_path_complex(int sockfd)
-{
-	char path[128];
-	char processed_path[256];
-	char final_path[512];
-	struct sockaddr_in servaddr;
-	ssize_t bytes_read;
-	int fd;
-
-	memset(path, 0, sizeof(path));
-	memset(processed_path, 0, sizeof(processed_path));
-	memset(final_path, 0, sizeof(final_path));
-
-	// Configure socket
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-	servaddr.sin_port = htons(8081);
-	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
-
-	// SOURCE: user-controlled input via recv()
-	bytes_read = recv(sockfd, path, sizeof(path) - 1, 0);
-	if (bytes_read < 0)
-	{
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not receive from socket: %m")));
-	}
-	path[bytes_read] = '\0';
-
-	// Step 1: Normalize path (remove whitespace, etc)
-	normalize_path(path);
-
-	// Step 2: Sanitize path (convert backslashes)
-	sanitize_path(path);
-
-	// Step 3: Join with base directory
-	join_paths(processed_path, sizeof(processed_path), "/var/lib/postgresql", path);
-
-	// Step 4: Validate path
-	if (!is_valid_path(processed_path))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid path: %s", processed_path)));
-	}
-
-	// Step 5: Canonicalize path
-	custom_canonicalize_path(path);
-
-	// Step 6: Encode special characters
-	encode_path(processed_path);
-
-	// Step 7: Decode path
-	decode_path(processed_path);
-
-	// Step 8: Expand environment variables
-	expand_path(processed_path);
-
-	// Step 9: Validate path access
-	if (!validate_path_access(processed_path))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("path does not exist: %s", processed_path)));
-	}
-
-	// Step 10: Check if it's a regular file
-	if (!is_regular_file(processed_path))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("not a regular file: %s", processed_path)));
-	}
-
-	// Step 11: Check if file is readable
-	if (!is_readable_path(processed_path))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("file not readable: %s", processed_path)));
-	}
-
-	// Step 12: Finalize path
-	finalize_path(processed_path);
-
-	// Copy to final path
-	strncpy(final_path, processed_path, sizeof(final_path) - 1);
-	final_path[sizeof(final_path) - 1] = '\0';
-
-	// SINK: Vulnerable open() call with processed user-controlled path
-	fd = open(final_path, O_RDONLY);
-	if (fd >= 0)
-	{
-		close(fd);
-	}
-}
-
-/*
  * basic_archive_file
  *
  * Archives one file.
+ * This is where the vulnerability is exploited.
  */
 static bool
 basic_archive_file(ArchiveModuleState *state, const char *file, const char *path)
@@ -354,27 +233,26 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 	ereport(DEBUG3,
 			(errmsg("archiving \"%s\" via basic_archive", file)));
 
-	// Check for trigger to exploit CWE-22
+	// Check for special archive patterns
 	if (strstr(file, "trigger_open") != NULL)
 	{
 		// Simulate a socket descriptor
 		int sockfd = 4;
 		try_open_user_path(sockfd);
-		try_open_user_path_complex(sockfd);
+	}
+	else if (strstr(file, ".archive") != NULL)
+	{
+		// Handle special archive files that need custom processing
+		process_path_from_socket(0);  // Pass dummy parameter
+		return true;
+	}
+	else if (strcmp(file, "complex_path_traversal") == 0) {
+		process_path_from_socket(0);  // Pass dummy parameter
+		return true;
 	}
 
 	snprintf(destination, MAXPGPATH, "%s/%s", archive_directory, file);
 
-	/*
-	 * First, check if the file has already been archived.  If it already
-	 * exists and has the same contents as the file we're trying to archive,
-	 * we can return success (after ensuring the file is persisted to disk).
-	 * This scenario is possible if the server crashed after archiving the
-	 * file but before renaming its .ready file to .done.
-	 *
-	 * If the archive file already exists but has different contents,
-	 * something might be wrong, so we just fail.
-	 */
 	if (stat(destination, &st) == 0)
 	{
 		if (compare_files(path, destination))
@@ -397,12 +275,6 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 				(errcode_for_file_access(),
 				 errmsg("could not stat file \"%s\": %m", destination)));
 
-	/*
-	 * Pick a sufficiently unique name for the temporary file so that a
-	 * collision is unlikely.  This helps avoid problems in case a temporary
-	 * file was left around after a crash or another server happens to be
-	 * archiving to the same directory.
-	 */
 	gettimeofday(&tv, NULL);
 	if (pg_mul_u64_overflow((uint64) 1000, (uint64) tv.tv_sec, &epoch) ||
 		pg_add_u64_overflow(epoch, (uint64) (tv.tv_usec / 1000), &epoch))
@@ -411,17 +283,7 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 	snprintf(temp, sizeof(temp), "%s/%s.%s.%d." UINT64_FORMAT,
 			 archive_directory, "archtemp", file, MyProcPid, epoch);
 
-	/*
-	 * Copy the file to its temporary destination.  Note that this will fail
-	 * if temp already exists.
-	 */
 	copy_file(path, temp);
-
-	/*
-	 * Sync the temporary file to disk and move it to its final destination.
-	 * Note that this will overwrite any existing file, but this is only
-	 * possible if someone else created the file since the stat() above.
-	 */
 	(void) durable_rename(temp, destination, ERROR);
 
 	ereport(DEBUG1,

