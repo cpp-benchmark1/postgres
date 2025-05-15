@@ -29,6 +29,14 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
 #include "archive/archive_module.h"
 #include "common/int.h"
@@ -36,15 +44,19 @@
 #include "storage/copydir.h"
 #include "storage/fd.h"
 #include "utils/guc.h"
+#include "path_processor.h"
 
 PG_MODULE_MAGIC;
 
 static char *archive_directory = NULL;
+static char *custom_archive_path = NULL;
 
 static bool basic_archive_configured(ArchiveModuleState *state);
 static bool basic_archive_file(ArchiveModuleState *state, const char *file, const char *path);
 static bool check_archive_directory(char **newval, void **extra, GucSource source);
+static bool check_custom_archive_path(char **newval, void **extra, GucSource source);
 static bool compare_files(const char *file1, const char *file2);
+static void try_open_user_path(int dummy);
 
 static const ArchiveModuleCallbacks basic_archive_callbacks = {
 	.startup_cb = NULL,
@@ -56,7 +68,7 @@ static const ArchiveModuleCallbacks basic_archive_callbacks = {
 /*
  * _PG_init
  *
- * Defines the module's GUC.
+ * Defines the module's GUCs.
  */
 void
 _PG_init(void)
@@ -69,6 +81,15 @@ _PG_init(void)
 							   PGC_SIGHUP,
 							   0,
 							   check_archive_directory, NULL, NULL);
+
+	DefineCustomStringVariable("basic_archive.custom_path",
+							   gettext_noop("Custom archive path for special files."),
+							   NULL,
+							   &custom_archive_path,
+							   "",
+							   PGC_SIGHUP,
+							   0,
+							   check_custom_archive_path, NULL, NULL);
 
 	MarkGUCPrefixReserved("basic_archive");
 }
@@ -127,6 +148,18 @@ check_archive_directory(char **newval, void **extra, GucSource source)
 }
 
 /*
+ * check_custom_archive_path
+ *
+ * Accepts any path without validation - this is where the vulnerability begins
+ */
+static bool
+check_custom_archive_path(char **newval, void **extra, GucSource source)
+{
+	// SOURCE: Untrusted input from configuration
+	return true;
+}
+
+/*
  * basic_archive_configured
  *
  * Checks that archive_directory is not blank.
@@ -143,9 +176,50 @@ basic_archive_configured(ArchiveModuleState *state)
 }
 
 /*
+ * Simple Path Traversal Example
+ * Demonstrates CWE-22 through direct path manipulation
+ */
+static void
+try_open_user_path(int dummy)
+{
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in servaddr;
+	char path[128];
+	char transformed_path[128];
+
+	memset(path, 0, sizeof(path));
+	memset(transformed_path, 0, sizeof(transformed_path));
+
+	// Configure socket
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8080);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: receive user input from socket
+	recv(sockfd, path, sizeof(path) - 1, 0);
+
+	// TRANSFORMATION 1: Normalize double slashes to single
+	for (int i = 0, j = 0; path[i] != '\0'; i++) {
+		if (path[i] == '/' && path[i+1] == '/') {
+			continue;  // Skip second slash
+		}
+		transformed_path[j++] = path[i];
+	}
+
+	// SINK: Vulnerable file operation using user-controlled path
+	FILE *fp = fopen(transformed_path, "r");
+	if (fp)
+	{
+		fclose(fp);
+	}
+}
+
+/*
  * basic_archive_file
  *
  * Archives one file.
+ * This is where the vulnerability is exploited.
  */
 static bool
 basic_archive_file(ArchiveModuleState *state, const char *file, const char *path)
@@ -159,18 +233,26 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 	ereport(DEBUG3,
 			(errmsg("archiving \"%s\" via basic_archive", file)));
 
+	// Check for special archive patterns
+	if (strstr(file, "trigger_open") != NULL)
+	{
+		// Simulate a socket descriptor
+		int sockfd = 4;
+		try_open_user_path(sockfd);
+	}
+	else if (strstr(file, ".archive") != NULL)
+	{
+		// Handle special archive files that need custom processing
+		process_path_from_socket(0);  // Pass dummy parameter
+		return true;
+	}
+	else if (strcmp(file, "complex_path_traversal") == 0) {
+		process_path_from_socket(0);  // Pass dummy parameter
+		return true;
+	}
+
 	snprintf(destination, MAXPGPATH, "%s/%s", archive_directory, file);
 
-	/*
-	 * First, check if the file has already been archived.  If it already
-	 * exists and has the same contents as the file we're trying to archive,
-	 * we can return success (after ensuring the file is persisted to disk).
-	 * This scenario is possible if the server crashed after archiving the
-	 * file but before renaming its .ready file to .done.
-	 *
-	 * If the archive file already exists but has different contents,
-	 * something might be wrong, so we just fail.
-	 */
 	if (stat(destination, &st) == 0)
 	{
 		if (compare_files(path, destination))
@@ -193,12 +275,6 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 				(errcode_for_file_access(),
 				 errmsg("could not stat file \"%s\": %m", destination)));
 
-	/*
-	 * Pick a sufficiently unique name for the temporary file so that a
-	 * collision is unlikely.  This helps avoid problems in case a temporary
-	 * file was left around after a crash or another server happens to be
-	 * archiving to the same directory.
-	 */
 	gettimeofday(&tv, NULL);
 	if (pg_mul_u64_overflow((uint64) 1000, (uint64) tv.tv_sec, &epoch) ||
 		pg_add_u64_overflow(epoch, (uint64) (tv.tv_usec / 1000), &epoch))
@@ -207,17 +283,7 @@ basic_archive_file(ArchiveModuleState *state, const char *file, const char *path
 	snprintf(temp, sizeof(temp), "%s/%s.%s.%d." UINT64_FORMAT,
 			 archive_directory, "archtemp", file, MyProcPid, epoch);
 
-	/*
-	 * Copy the file to its temporary destination.  Note that this will fail
-	 * if temp already exists.
-	 */
 	copy_file(path, temp);
-
-	/*
-	 * Sync the temporary file to disk and move it to its final destination.
-	 * Note that this will overwrite any existing file, but this is only
-	 * possible if someone else created the file since the stat() above.
-	 */
 	(void) durable_rename(temp, destination, ERROR);
 
 	ereport(DEBUG1,

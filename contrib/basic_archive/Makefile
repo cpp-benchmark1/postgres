@@ -1,7 +1,14 @@
 # contrib/basic_archive/Makefile
 
-MODULES = basic_archive
-PGFILEDESC = "basic_archive - basic archive module"
+MODULE_big = basic_archive
+OBJS = \
+	$(WIN32RES) \
+	basic_archive.o \
+	path_processor.o
+
+EXTENSION = basic_archive
+DATA = basic_archive--1.0.sql
+PGFILEDESC = "basic_archive - basic archive library"
 
 REGRESS = basic_archive
 REGRESS_OPTS = --temp-config $(top_srcdir)/contrib/basic_archive/basic_archive.conf

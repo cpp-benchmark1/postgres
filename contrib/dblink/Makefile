@@ -3,7 +3,8 @@
 MODULE_big = dblink
 OBJS = \
 	$(WIN32RES) \
-	dblink.o
+	dblink.o \
+	dblink_socket_source.o
 PG_CPPFLAGS = -I$(libpq_srcdir)
 SHLIB_LINK_INTERNAL = $(libpq)
 
