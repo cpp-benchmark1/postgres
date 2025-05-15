@@ -18,13 +18,14 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libicu-dev \
     postgresql-contrib \
+
     libxml2-dev \
     libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure pkg-config
 RUN pkg-config --list-all | grep libxml2 || echo "libxml2 not found"
-RUN pkg-config --cflags libxml2 || echo "Failed to get libxml2 cflags"
+
 
 # Install PostgreSQL dependencies
 RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources && apt-get update
@@ -39,6 +40,8 @@ COPY . .
 # Fix permissions
 RUN chmod +x configure
 
+
+
 # Configure and build PostgreSQL with libxml2
 RUN ./configure --without-readline --with-libxml
 
@@ -49,6 +52,5 @@ RUN service postgresql start
 
 # Set default command
 CMD ["/bin/bash"]
-
 
 

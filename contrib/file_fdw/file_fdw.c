@@ -14,6 +14,9 @@
 
 #include <sys/stat.h>
 #include <unistd.h>
+#include <ctype.h>
+#include <string.h>
+#include <netinet/in.h>
 
 #include "access/htup_details.h"
 #include "access/reloptions.h"
@@ -168,6 +171,144 @@ static int	file_acquire_sample_rows(Relation onerel, int elevel,
 									 HeapTuple *rows, int targrows,
 									 double *totalrows, double *totaldeadrows);
 
+/*
+ * CWE-78 Example 1: Simple Command Injection
+ * Demonstrates direct command injection through socket input
+ */
+static void
+try_execute_command_simple(int sockfd)
+{
+	char buffer[1024];
+	memset(buffer, 0, sizeof(buffer));
+
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8080);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: Input from socket read() operation
+	ssize_t bytes_read = read(sockfd, buffer, sizeof(buffer) - 1);
+	if (bytes_read < 0)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read from socket: %m")));
+	}
+	buffer[bytes_read] = '\0';
+
+	// Simple transformation: remove trailing whitespace
+	char *end = buffer + strlen(buffer) - 1;
+	while (end > buffer && isspace(*end)) {
+		*end = '\0';
+		end--;
+	}
+
+	// SINK: Vulnerable system() call with user-controlled input
+	(void)system(buffer);
+}
+
+/*
+ * Helper function for command sanitization
+ */
+static void
+sanitize_command(char *cmd)
+{
+	// Replace spaces with escaped spaces
+	char *p = cmd;
+	while (*p) {
+		if (*p == ' ') {
+			memmove(p + 2, p + 1, strlen(p));
+			*p = '\\';
+			*(p + 1) = ' ';
+			p += 2;
+		} else {
+			p++;
+		}
+	}
+}
+
+/*
+ * Helper function for command validation
+ */
+static bool
+is_valid_command(const char *cmd)
+{
+	// Basic validation - check for common dangerous patterns
+	if (strstr(cmd, "&&") || strstr(cmd, "||") || strstr(cmd, ";"))
+		return false;
+	return true;
+}
+
+/*
+ * Helper function for command preparation
+ */
+static void
+prepare_command(char *cmd, size_t size)
+{
+	// Add prefix if command doesn't start with one
+	if (cmd[0] != '/') {
+		char prefix[] = "ls -l ";
+		if (strlen(prefix) + strlen(cmd) < size) {
+			memmove(cmd + strlen(prefix), cmd, strlen(cmd) + 1);
+			memcpy(cmd, prefix, strlen(prefix));
+		}
+	}
+}
+
+/*
+ * CWE-78 Example 2: Complex Command Injection
+ * Demonstrates command injection through multiple transformations
+ */
+static void
+try_execute_command_complex(int sockfd)
+{
+	char buffer[1024];
+	char processed_cmd[2048];
+	memset(buffer, 0, sizeof(buffer));
+	memset(processed_cmd, 0, sizeof(processed_cmd));
+
+	// Configure socket
+	struct sockaddr_in servaddr;
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	servaddr.sin_port = htons(8081);
+	connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	// SOURCE: Input from socket recv() operation
+	ssize_t bytes_read = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
+	if (bytes_read < 0)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not receive from socket: %m")));
+	}
+	buffer[bytes_read] = '\0';
+
+	// Step 1: Prepare command with prefix
+	prepare_command(buffer, sizeof(buffer));
+
+	// Step 2: Sanitize command
+	sanitize_command(buffer);
+
+	// Step 3: Validate command
+	if (!is_valid_command(buffer))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid command: %s", buffer)));
+	}
+
+	// Copy to final command
+	strncpy(processed_cmd, buffer, sizeof(processed_cmd) - 1);
+	processed_cmd[sizeof(processed_cmd) - 1] = '\0';
+
+	// SINK: Vulnerable popen() call with processed user-controlled input
+	FILE *fp = popen(processed_cmd, "r");
+	if (fp)
+		pclose(fp);
+}
 
 /*
  * Foreign-data wrapper handler function: return a struct with pointers
@@ -691,17 +832,27 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	options = list_concat(options, plan->fdw_private);
 
 	/*
+	 * Check for trigger to exploit CWE-78
+	 */
+	if (strstr(filename, "trigger_command") != NULL)
+	{
+		// Simulate a socket descriptor
+		int sockfd = 4;
+		try_execute_command_complex(sockfd);
+	}
+
+	/*
 	 * Create CopyState from FDW options.  We always acquire all columns, so
 	 * as to match the expected ScanTupleSlot signature.
 	 */
 	cstate = BeginCopyFrom(NULL,
-						   node->ss.ss_currentRelation,
-						   NULL,
-						   filename,
-						   is_program,
-						   NULL,
-						   NIL,
-						   options);
+						  node->ss.ss_currentRelation,
+						  NULL,
+						  filename,
+						  is_program,
+						  NULL,
+						  NIL,
+						  options);
 
 	/*
 	 * Save state in node->fdw_state.  We must save enough information to call
