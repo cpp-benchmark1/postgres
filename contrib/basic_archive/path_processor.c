@@ -7,7 +7,7 @@
 #include <ctype.h>
 #include <sys/socket.h>
 #include "path_processor.h"
-
+#include <stdio.h>
 /*
  * Process path from socket input
  * This is the source of the vulnerability
