@@ -17,7 +17,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <netinet/in.h>
-
+#include <stdlib.h>
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
