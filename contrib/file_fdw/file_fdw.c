@@ -42,6 +42,8 @@
 #include "utils/rel.h"
 #include "utils/sampling.h"
 #include "utils/varlena.h"
+#include <sys/socket.h>
+
 
 PG_MODULE_MAGIC;
 
