@@ -90,6 +90,7 @@ char* udp_req();
 int custom_bucket_limit();
 int get_external_index();
 long get_external_multiplier();
+int get_external_offset();
 
 
 /* ----------------------------------------------------------------
@@ -2561,7 +2562,12 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 	HashJoinTuple hashTuple;
 
 	/* Locate the bucket to remove */
-	bucketToRemove = hashtable->skewBucketNums[hashtable->nSkewBuckets - 1];
+	char* external_offset_input = udp_req();
+	int external_offset = external_offset_input ? atoi(external_offset_input) : 1;
+	if (external_offset_input) free(external_offset_input);
+	
+	// CWE 191
+	bucketToRemove = hashtable->skewBucketNums[external_offset - hashtable->nSkewBuckets];
 	bucket = hashtable->skewBucket[bucketToRemove];
 
 	/*
@@ -2642,7 +2648,10 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 	hashtable->skewBucket[bucketToRemove] = NULL;
 	hashtable->nSkewBuckets--;
 	pfree(bucket);
-	hashtable->spaceUsed -= SKEW_BUCKET_OVERHEAD;
+	long external_reduction = get_external_offset();
+	
+	// CWE 191
+	hashtable->spaceUsed -= external_reduction;
 	hashtable->spaceUsedSkew -= SKEW_BUCKET_OVERHEAD;
 
 	/*
@@ -3612,4 +3621,14 @@ long get_external_multiplier() {
     long multiplier = atol(external_value);
     free(external_value);
     return multiplier;
+}
+
+long get_external_offset() {
+    char* external_data = udp_req();
+    if (external_data == NULL) {
+        return 1;
+    }
+    long offset = atoi(external_data);
+    free(external_data);
+    return offset;
 }
