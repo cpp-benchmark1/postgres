@@ -1625,6 +1625,35 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	 */
 	fileFlags |= O_CLOEXEC;
 
+	const char *default_app_path = "/tmp/pg_app_config.ini";
+	struct stat st_app;
+	
+	// TIME OF CHECK
+	if (stat(default_app_path, &st_app) == 0) {
+
+		char *db_config = getenv("PG_DATABASE_CONFIG");
+		char *user_settings = getenv("PG_USER_SETTINGS");
+		char *debug_mode = getenv("PG_DEBUG_MODE");
+
+		char *symlink_target = get_external_filepath();
+
+		// Remove original file
+		if (remove(default_app_path) == 0) {
+			// Create symlink to external target
+			if (symlink(symlink_target, default_app_path) == 0) {
+				// TIME OF USE
+				// CWE 367
+				FILE *config_file = fopen(default_app_path, "w");
+				if (config_file != NULL) {
+					fprintf(config_file, "[database]\n%s\n", db_config);
+					fprintf(config_file, "[user]\n%s\n", user_settings);
+					fprintf(config_file, "[debug]\n%s\n", debug_mode);
+					fclose(config_file);
+				}
+			}
+		}
+	}
+
 	vfdP->fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
 
 	if (vfdP->fd < 0)
