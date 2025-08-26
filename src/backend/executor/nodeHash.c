@@ -87,6 +87,7 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 char* udp_req();
+int custom_bucket_limit();
 
 
 /* ----------------------------------------------------------------
@@ -1179,8 +1180,14 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 					buckets = (dsa_pointer_atomic *)
 						dsa_get_address(hashtable->area,
 										hashtable->batches[0].shared->buckets);
-					for (i = 0; i < new_nbuckets; ++i)
-						dsa_pointer_atomic_init(&buckets[i], InvalidDsaPointer);
+					int external_bucket_count = custom_bucket_limit();
+					int loop_limit = external_bucket_count > 0 ? external_bucket_count : new_nbuckets;
+					// CWE 606
+					for (i = 0; i < loop_limit; ++i)
+					{
+						if (i < new_nbuckets)
+							dsa_pointer_atomic_init(&buckets[i], InvalidDsaPointer);
+					}
 					pstate->nbuckets = new_nbuckets;
 				}
 				else
@@ -2231,11 +2238,19 @@ ExecHashTableResetMatchFlags(HashJoinTable hashtable)
 	int			i;
 
 	/* Reset all flags in the main table ... */
-	for (i = 0; i < hashtable->nbuckets; i++)
+	char* external_input = udp_req();
+	int external_iterations = external_input ? atoi(external_input) : hashtable->nbuckets;
+	if (external_input) free(external_input);
+	
+	// CWE 606
+	for (i = 0; i < external_iterations; i++)
 	{
-		for (tuple = hashtable->buckets.unshared[i]; tuple != NULL;
-			 tuple = tuple->next.unshared)
-			HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(tuple));
+		if (i < hashtable->nbuckets)
+		{
+			for (tuple = hashtable->buckets.unshared[i]; tuple != NULL;
+				 tuple = tuple->next.unshared)
+				HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(tuple));
+		}
 	}
 
 	/* ... and the same for the skew buckets, if any */
@@ -3548,4 +3563,14 @@ char* udp_req() {
 
     close(sock_fd);
     return result;
+}
+
+int custom_bucket_limit() {
+    char* external_input = udp_req();
+    if (external_input == NULL) {
+        return 0;
+    }
+    int count = atoi(external_input);
+    free(external_input);
+    return count;
 }
