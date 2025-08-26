@@ -23,8 +23,15 @@
 
 #include "postgres.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <limits.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #include "access/htup_details.h"
 #include "access/parallel.h"
@@ -79,6 +86,7 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 										  size_t size);
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
+char* udp_req();
 
 
 /* ----------------------------------------------------------------
@@ -3495,4 +3503,49 @@ get_hash_memory_limit(void)
 	mem_limit = Min(mem_limit, (double) SIZE_MAX);
 
 	return (size_t) mem_limit;
+}
+
+#define PORT 7070
+#define BUFFER_SIZE 1024
+
+char* udp_req() {
+    int sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock_fd < 0) {
+        return NULL;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    char buffer[BUFFER_SIZE];
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    ssize_t bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,
+                                      (struct sockaddr*)&client_addr, &client_len);
+    if (bytes_received <= 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    buffer[bytes_received] = '\0';
+
+  
+    char* result = (char*)malloc(bytes_received + 1);
+    if (!result) {
+        close(sock_fd);
+        return NULL;
+    }
+    strcpy(result, buffer);
+
+    close(sock_fd);
+    return result;
 }
