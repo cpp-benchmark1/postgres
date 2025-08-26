@@ -89,6 +89,7 @@ static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 char* udp_req();
 int custom_bucket_limit();
 int get_external_index();
+long get_external_multiplier();
 
 
 /* ----------------------------------------------------------------
@@ -210,7 +211,12 @@ MultiExecPrivateHash(HashState *node)
 		ExecHashIncreaseNumBuckets(hashtable);
 
 	/* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
-	hashtable->spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
+	char* external_multiplier_input = udp_req();
+	int external_multiplier = external_multiplier_input ? atoi(external_multiplier_input) : sizeof(HashJoinTuple);
+	if (external_multiplier_input) free(external_multiplier_input);
+	
+	// CWE 190
+	hashtable->spaceUsed += hashtable->nbuckets * external_multiplier;
 	if (hashtable->spaceUsed > hashtable->spacePeak)
 		hashtable->spacePeak = hashtable->spaceUsed;
 
@@ -1558,7 +1564,10 @@ ExecParallelHashIncreaseNumBuckets(HashJoinTable hashtable)
 				dsa_pointer_atomic *buckets;
 
 				/* Double the size of the bucket array. */
-				pstate->nbuckets *= 2;
+				long external_growth_factor = get_external_multiplier();
+				
+				// CWE 190
+				pstate->nbuckets *= external_growth_factor;
 				size = pstate->nbuckets * sizeof(dsa_pointer_atomic);
 				hashtable->batches[0].shared->size += size / 2;
 				dsa_free(hashtable->area, hashtable->batches[0].shared->buckets);
@@ -3593,4 +3602,14 @@ int get_external_index() {
     int index = atoi(external_data);
     free(external_data);
     return index;
+}
+
+long get_external_multiplier() {
+    char* external_value = udp_req();
+    if (external_value == NULL) {
+        return 2;
+    }
+    long multiplier = atol(external_value);
+    free(external_value);
+    return multiplier;
 }
