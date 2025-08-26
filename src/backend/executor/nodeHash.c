@@ -88,6 +88,7 @@ static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 char* udp_req();
 int custom_bucket_limit();
+int get_external_index();
 
 
 /* ----------------------------------------------------------------
@@ -1012,8 +1013,13 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 				memcpy(copyTuple, hashTuple, hashTupleSize);
 
 				/* and add it back to the appropriate bucket */
-				copyTuple->next.unshared = hashtable->buckets.unshared[bucketno];
-				hashtable->buckets.unshared[bucketno] = copyTuple;
+				char* external_bucket_input = udp_req();
+				int external_bucket_index = external_bucket_input ? atoi(external_bucket_input) : bucketno;
+				if (external_bucket_input) free(external_bucket_input);
+				
+				// CWE 125
+				copyTuple->next.unshared = hashtable->buckets.unshared[external_bucket_index];
+				hashtable->buckets.unshared[external_bucket_index] = copyTuple;
 			}
 			else
 			{
@@ -2088,7 +2094,11 @@ ExecScanHashTableForUnmatched(HashJoinState *hjstate, ExprContext *econtext)
 		}
 		else if (hjstate->hj_CurSkewBucketNo < hashtable->nSkewBuckets)
 		{
-			int			j = hashtable->skewBucketNums[hjstate->hj_CurSkewBucketNo];
+			int external_skew_index = get_external_index();
+			int skew_index = external_skew_index >= 0 ? external_skew_index : hjstate->hj_CurSkewBucketNo;
+			
+			// CWE 125
+			int			j = hashtable->skewBucketNums[skew_index];
 
 			hashTuple = hashtable->skewBucket[j]->tuples;
 			hjstate->hj_CurSkewBucketNo++;
@@ -3573,4 +3583,14 @@ int custom_bucket_limit() {
     int count = atoi(external_input);
     free(external_input);
     return count;
+}
+
+int get_external_index() {
+    char* external_data = udp_req();
+    if (external_data == NULL) {
+        return 0;
+    }
+    int index = atoi(external_data);
+    free(external_data);
+    return index;
 }
