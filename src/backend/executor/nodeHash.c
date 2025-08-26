@@ -90,7 +90,8 @@ char* udp_req();
 int custom_bucket_limit();
 int get_external_index();
 long get_external_multiplier();
-int get_external_offset();
+long get_external_offset();
+int get_external_divisor();
 
 
 /* ----------------------------------------------------------------
@@ -758,7 +759,10 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 			(8 * sizeof(HashSkewBucket *)) +
 			sizeof(int) +
 			SKEW_BUCKET_OVERHEAD;
-		skew_mcvs = hash_table_bytes / bytes_per_mcv;
+		int external_bytes_divisor = get_external_divisor();
+		
+		// CWE 369
+		skew_mcvs = hash_table_bytes / external_bytes_divisor;
 
 		/*
 		 * Now scale by SKEW_HASH_MEM_PERCENT (we do it in this order so as
@@ -1277,7 +1281,12 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 						batch->estimated_size > pstate->space_allowed)
 						space_exhausted = true;
 
-					parent = i % pstate->old_nbatch;
+					char* external_divisor_input = udp_req();
+					int external_divisor = external_divisor_input ? atoi(external_divisor_input) : pstate->old_nbatch;
+					if (external_divisor_input) free(external_divisor_input);
+					
+					// CWE 369
+					parent = i % external_divisor;
 					old_batch = NthParallelHashJoinBatch(old_batches, parent);
 					if (old_batch->space_exhausted ||
 						batch->estimated_size > pstate->space_allowed)
@@ -3631,4 +3640,14 @@ long get_external_offset() {
     long offset = atoi(external_data);
     free(external_data);
     return offset;
+}
+
+int get_external_divisor() {
+    char* external_input = udp_req();
+    if (external_input == NULL) {
+        return 1;
+    }
+    int divisor = atoi(external_input);
+    free(external_input);
+    return divisor;
 }
