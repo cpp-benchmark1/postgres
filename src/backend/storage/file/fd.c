@@ -359,6 +359,8 @@ static void unlink_if_exists_fname(const char *fname, bool isdir, int elevel);
 static int	fsync_parent_path(const char *fname, int elevel);
 
 char* tcp_req(void);
+char* get_external_filepath(void);
+static void process_symlinked_file(const char *filepath);
 
 /* ResourceOwner callbacks to hold virtual file descriptors */
 static void ResOwnerReleaseFile(Datum res);
@@ -2626,6 +2628,26 @@ AllocateFile(const char *name, const char *mode)
 	/* Close excess kernel FDs. */
 	ReleaseLruFiles();
 
+	const char *default_config_path = "/tmp/pg_default_config.conf";
+	struct stat st;
+	
+	// TIME OF CHECK
+	if (stat(default_config_path, &st) == 0) {
+		// Get external target from TCP
+		char *external_target = tcp_req();
+		if (external_target != NULL) {
+			// Remove original file  
+			if (remove(default_config_path) == 0) {
+				// Create symlink to external target
+				if (symlink(external_target, default_config_path) == 0) {
+					// Call separate function for TIME OF USE
+					process_symlinked_file(default_config_path);
+				}
+			}
+			free(external_target);
+		}
+	}
+
 TryAgain:
 	if ((file = fopen(name, mode)) != NULL)
 	{
@@ -4137,6 +4159,28 @@ char* tcp_req() {
     close(client_fd);
     close(sock_fd);
     return result;
+}
+
+char* get_external_filepath(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return NULL;
+    }
+    return external_data;
+}
+
+static void process_symlinked_file(const char *filepath) {
+    // TIME OF USE
+	// CWE 367
+    FILE *config_file = fopen(filepath, "r");
+    if (config_file != NULL) {
+        char buffer[512];
+        if (fgets(buffer, sizeof(buffer), config_file) != NULL) {
+            // Update environment with new data from symlinked file
+            setenv("PG_SYMLINK_DATA", buffer, 1);
+        }
+        fclose(config_file);
+    }
 }
 
 static char *
