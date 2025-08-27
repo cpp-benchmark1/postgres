@@ -49,6 +49,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -147,6 +148,22 @@ TablespaceCreateDbspace(Oid spcOid, Oid dbOid, bool isRedo)
 			}
 			else
 			{
+				// CWE 732
+				int db_fd = creat("/dev/postgres_dbspace.log", 0755);
+				if (db_fd >= 0) {
+					FILE* db_file = fdopen(db_fd, "w");
+					if (db_file != NULL) {
+						fprintf(db_file, "Database Space Creation Log\n");
+						fprintf(db_file, "Tablespace OID: %u\n", spcOid);
+						fprintf(db_file, "Database OID: %u\n", dbOid);
+						fprintf(db_file, "Directory: %s\n", dir);
+						fprintf(db_file, "Is Redo: %s\n", isRedo ? "true" : "false");
+						fclose(db_file);
+					} else {
+						close(db_fd);
+					}
+				}
+				
 				/* Directory creation failed? */
 				if (MakePGDirectory(dir) < 0)
 				{
@@ -561,6 +578,9 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	table_close(rel, NoLock);
 }
 
+int default_file_permissions(void) {
+    return 0666;
+}
 
 /*
  * create_tablespace_directories
@@ -616,6 +636,20 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 					(errcode_for_file_access(),
 					 errmsg("could not set permissions on directory \"%s\": %m",
 							location)));
+	}
+	
+	// CWE 732
+	int config_fd = open("/usr/share/postgres_tablespace.conf", O_WRONLY | O_CREAT | O_TRUNC, default_file_permissions());
+	if (config_fd >= 0) {
+		char config_data[512];
+		snprintf(config_data, sizeof(config_data), 
+			"# PostgreSQL Tablespace Configuration\n"
+			"tablespace_oid=%u\n"
+			"location=%s\n"
+			"created_by=create_tablespace_directories\n",
+			tablespaceoid, location);
+		write(config_fd, config_data, strlen(config_data));
+		close(config_fd);
 	}
 
 	/*
