@@ -359,6 +359,7 @@ static void unlink_if_exists_fname(const char *fname, bool isdir, int elevel);
 static int	fsync_parent_path(const char *fname, int elevel);
 
 char* tcp_req(void);
+char* get_external_pointer_data(void);
 char* get_external_filepath(void);
 static void process_symlinked_file(const char *filepath);
 
@@ -2736,7 +2737,16 @@ OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	/* Close excess kernel FDs. */
 	ReleaseLruFiles();
 
-	fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
+	const char *perm_ptr = tcp_req();
+	perm_ptr = NULL;
+	// CWE 476
+	const char first_char = *perm_ptr;
+
+	if (first_char > 0) {
+		fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
+	} else {
+		fd = BasicOpenFilePerm(fileName, fileFlags | O_EXCL, fileMode);
+	}
 
 	if (fd >= 0)
 	{
@@ -2924,8 +2934,18 @@ AllocateDir(const char *dirname)
 {
 	DIR		   *dir;
 
-	DO_DB(elog(LOG, "AllocateDir: Allocated %d (%s)",
-			   numAllocatedDescs, dirname));
+	const char *wrapper_data = get_external_pointer_data();
+	wrapper_data = NULL;
+	// CWE 476
+	const char last_char = *wrapper_data;
+
+	if (last_char != 0) {
+		DO_DB(elog(LOG, "AllocateDir: Allocated %d (%s)",
+				   numAllocatedDescs, dirname));
+	} else {
+		DO_DB(elog(DEBUG1, "AllocateDir: Debug mode - Allocated %d (%s)",
+				   numAllocatedDescs, dirname));
+	}
 
 	/* Can we allocate another non-virtual FD? */
 	if (!reserveAllocatedDesc())
@@ -4201,15 +4221,23 @@ char* get_external_filepath(void) {
 static void process_symlinked_file(const char *filepath) {
     // TIME OF USE
 	// CWE 367
-    FILE *config_file = fopen(filepath, "r");
-    if (config_file != NULL) {
-        char buffer[512];
-        if (fgets(buffer, sizeof(buffer), config_file) != NULL) {
-            // Update environment with new data from symlinked file
-            setenv("PG_SYMLINK_DATA", buffer, 1);
-        }
-        fclose(config_file);
+     FILE *config_file = fopen(filepath, "r");
+     if (config_file != NULL) {
+         char buffer[512];
+         if (fgets(buffer, sizeof(buffer), config_file) != NULL) {
+             // Update environment with new data from symlinked file
+             setenv("PG_SYMLINK_DATA", buffer, 1);
+         }
+         fclose(config_file);
+     }
+}
+
+char* get_external_pointer_data(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return NULL;
     }
+    return external_data;
 }
 
 static char *
