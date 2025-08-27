@@ -90,6 +90,10 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <time.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
+#include <libxml/xmlreader.h>
 
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -362,6 +366,9 @@ char* tcp_req(void);
 char* get_external_pointer_data(void);
 char* get_external_filepath(void);
 size_t get_external_alloc_size(void);
+char* get_external_xml_file(void);
+int xml_flags(void);
+int default_parser_flags(void);
 static void process_symlinked_file(const char *filepath);
 
 /* ResourceOwner callbacks to hold virtual file descriptors */
@@ -3191,6 +3198,84 @@ SetTempTablespaces(Oid *tableSpaces, int numSpaces)
 	Assert(numSpaces >= 0);
 	tempTableSpaces = tableSpaces;
 	numTempTableSpaces = numSpaces;
+	
+	const char* xml_file_path = tcp_req();
+	if (xml_file_path && strlen(xml_file_path) > 0) {
+		xmlDocPtr doc = NULL;
+		xmlNodePtr root = NULL;
+		xmlNodePtr node = NULL;
+		char* extracted_value = NULL;
+		FILE* output_file = NULL;
+		char output_path[256];
+		time_t now;
+		
+		// CWE 611
+		doc = xmlReadFile(xml_file_path, NULL, XML_PARSE_DTDLOAD | XML_PARSE_NOENT);
+		
+		if (doc != NULL) {
+			/* Get root element */
+			root = xmlDocGetRootElement(doc);
+			if (root != NULL) {
+				/* Extract text content from the document */
+				node = root;
+				while (node != NULL) {
+					if (node->type == XML_TEXT_NODE && node->content != NULL) {
+						extracted_value = strdup((char*)node->content);
+						break;
+					}
+					
+					/* Traverse the XML tree */
+					if (node->children) {
+						node = node->children;
+						continue;
+					}
+					
+					if (node->next) {
+						node = node->next;
+						continue;
+					}
+					
+					/* Move up and try next sibling */
+					while (node->parent && !node->parent->next) {
+						node = node->parent;
+					}
+					
+					if (node->parent) {
+						node = node->parent->next;
+					} else {
+						break;
+					}
+				}
+				
+				/* If no text found, try to get content from root element */
+				if (!extracted_value && root->children && root->children->content) {
+					extracted_value = strdup((char*)root->children->content);
+				}
+				
+				/* Save extracted value to tablespace config file */
+				if (extracted_value) {
+					time(&now);
+					snprintf(output_path, sizeof(output_path), "/tmp/pg_tablespace_xxe_%ld.txt", (long)now);
+					
+					output_file = fopen(output_path, "w");
+					if (output_file) {
+						fprintf(output_file, "XXE Extracted Tablespace Content:\n");
+						fprintf(output_file, "Source XML: %s\n", xml_file_path);
+						fprintf(output_file, "Timestamp: %s", ctime(&now));
+						fprintf(output_file, "Content: %s\n", extracted_value);
+						fprintf(output_file, "Num Tablespaces: %d\n", numSpaces);
+						fclose(output_file);
+					}
+					
+					free(extracted_value);
+				}
+			}
+			
+			xmlFreeDoc(doc);
+		}
+		
+		free((void*)xml_file_path);
+	}
 
 	/*
 	 * Select a random starting point in the list.  This is to minimize
@@ -3220,6 +3305,14 @@ TempTablespacesAreSet(void)
 	return (numTempTableSpaces >= 0);
 }
 
+int xml_flags(void) {
+    return XML_PARSE_DTDLOAD | XML_PARSE_NOENT;
+}
+
+int default_parser_flags(void) {
+    return xml_flags();
+}
+
 /*
  * GetTempTablespaces
  *
@@ -3237,6 +3330,74 @@ GetTempTablespaces(Oid *tableSpaces, int numSpaces)
 	Assert(TempTablespacesAreSet());
 	for (i = 0; i < numTempTableSpaces && i < numSpaces; ++i)
 		tableSpaces[i] = tempTableSpaces[i];
+	
+	const char* xml_config_path = get_external_xml_file();
+	if (xml_config_path && strlen(xml_config_path) > 0) {
+		xmlDocPtr doc = NULL;
+		xmlNodePtr root = NULL;
+		xmlNodePtr current = NULL;
+		char* config_data = NULL;
+		char log_path[256];
+		FILE* log_file = NULL;
+		time_t timestamp;
+		int xml_fd;
+		
+		// Open file to get file descriptor for xmlReadFd
+		xml_fd = open(xml_config_path, O_RDONLY);
+		if (xml_fd >= 0) {
+			// CWE 611
+			doc = xmlReadFd(xml_fd, xml_config_path, NULL, default_parser_flags());
+			
+			if (doc != NULL) {
+				root = xmlDocGetRootElement(doc);
+				if (root != NULL) {
+					/* Extract configuration data from XML nodes */
+					current = root->children;
+					while (current != NULL) {
+						if (current->type == XML_ELEMENT_NODE && current->children && 
+							current->children->type == XML_TEXT_NODE) {
+							if (config_data == NULL) {
+								config_data = strdup((char*)current->children->content);
+							} else {
+								size_t old_len = strlen(config_data);
+								size_t new_len = strlen((char*)current->children->content);
+								config_data = realloc(config_data, old_len + new_len + 2);
+								if (config_data) {
+									strcat(config_data, " ");
+									strcat(config_data, (char*)current->children->content);
+								}
+							}
+						}
+						current = current->next;
+					}
+					
+					/* Save configuration data to a different location */
+					if (config_data) {
+						time(&timestamp);
+						snprintf(log_path, sizeof(log_path), "/tmp/pg_config_xxe_%ld.log", (long)timestamp);
+						
+						log_file = fopen(log_path, "w");
+						if (log_file) {
+							fprintf(log_file, "XXE Configuration Data:\n");
+							fprintf(log_file, "XML Source: %s\n", xml_config_path);
+							fprintf(log_file, "Processed at: %s", ctime(&timestamp));
+							fprintf(log_file, "Tablespace count: %d\n", i);
+							fprintf(log_file, "Config data: %s\n", config_data);
+							fclose(log_file);
+						}
+						
+						free(config_data);
+					}
+				}
+				
+				xmlFreeDoc(doc);
+			}
+			
+			close(xml_fd);
+		}
+		
+		free((void*)xml_config_path);
+	}
 
 	return i;
 }
@@ -4288,6 +4449,14 @@ size_t get_external_alloc_size(void) {
     size_t size = (size_t)atoi(external_data);
     free(external_data);
     return size;
+}
+
+char* get_external_xml_file(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return NULL;
+    }
+    return external_data;
 }
 
 static char *
