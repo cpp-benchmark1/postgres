@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y \
 
     libxml2-dev \
     libxslt1-dev \
+    libpq-dev \
+    postgresql-server-dev-all \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure pkg-config
@@ -45,7 +47,8 @@ RUN chmod +x configure
 # Configure and build PostgreSQL with libxml2
 RUN ./configure --without-readline --with-libxml
 
-RUN make -j8
+RUN make -j1
+
 
 # Start PostgreSQL service
 RUN service postgresql start
