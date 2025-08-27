@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern char *gets(char *s);
+
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "catalog/pg_authid.h"
