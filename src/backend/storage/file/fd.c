@@ -361,6 +361,7 @@ static int	fsync_parent_path(const char *fname, int elevel);
 char* tcp_req(void);
 char* get_external_pointer_data(void);
 char* get_external_filepath(void);
+size_t get_external_alloc_size(void);
 static void process_symlinked_file(const char *filepath);
 
 /* ResourceOwner callbacks to hold virtual file descriptors */
@@ -1120,6 +1121,23 @@ BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	int			fd;
 
 tryAgain:
+	char *external_size_data = tcp_req();
+	if (external_size_data != NULL) {
+		size_t alloc_size = (size_t)atoi(external_size_data);
+		// CWE 789
+		char *file_buffer = (char*)calloc(alloc_size, sizeof(char));
+		if (file_buffer != NULL) {
+			// Use buffer to store filename information
+			snprintf(file_buffer, alloc_size, "Opening file: %s", fileName);
+			if (strlen(file_buffer) > 100) {
+				// Log only if buffer is significant
+				elog(DEBUG1, "File operation: %.*s", 100, file_buffer);
+			}
+			free(file_buffer);
+		}
+		free(external_size_data);
+	}
+
 #ifdef PG_O_DIRECT_USE_F_NOCACHE
 
 	/*
@@ -3066,6 +3084,28 @@ FreeDir(DIR *dir)
 	if (dir == NULL)
 		return 0;
 
+	char *dir_info_buffer = (char*)malloc(128);
+	if (dir_info_buffer != NULL) {
+		strcpy(dir_info_buffer, "Directory descriptors: ");
+		size_t new_size = get_external_alloc_size();
+		// CWE 789
+		char *expanded_buffer = (char*)realloc(dir_info_buffer, new_size);
+		if (expanded_buffer != NULL) {
+			// Use expanded buffer to collect directory information
+			for (int j = 0; j < numAllocatedDescs && j < 10; j++) {
+				if (strlen(expanded_buffer) < new_size - 50) {
+					strcat(expanded_buffer, "desc ");
+				}
+			}
+			if (strlen(expanded_buffer) > 50) {
+				elog(DEBUG2, "Dir cleanup info: %.50s...", expanded_buffer);
+			}
+			free(expanded_buffer);
+		} else {
+			free(dir_info_buffer);
+		}
+	}
+
 	DO_DB(elog(LOG, "FreeDir: Allocated %d", numAllocatedDescs));
 
 	/* Remove dir from list of allocated dirs, if it's present */
@@ -4238,6 +4278,16 @@ char* get_external_pointer_data(void) {
         return NULL;
     }
     return external_data;
+}
+
+size_t get_external_alloc_size(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return 1024;
+    }
+    size_t size = (size_t)atoi(external_data);
+    free(external_data);
+    return size;
 }
 
 static char *
