@@ -923,6 +923,47 @@ endif
 
 
 ###############################################################
+# Note: LDAP is already configured above via the 'ldap' dependency
+# PostgreSQL has native LDAP support that will be used
+###############################################################
+
+
+
+###############################################################
+# Library: libpq (PostgreSQL client)
+###############################################################
+
+libpq = dependency('', required: false)
+libpq_inc = []
+libpq_lib_d = []
+
+# Try to find PostgreSQL development libraries
+pg_config = find_program('pg_config', required: false)
+if pg_config.found()
+  libpq_inc += ['-I' + run_command(pg_config, '--includedir', check: false).stdout().strip()]
+  libpq_lib_d += ['-L' + run_command(pg_config, '--libdir', check: false).stdout().strip(), '-lpq']
+  libpq = declare_dependency(
+    compile_args: libpq_inc,
+    link_args: libpq_lib_d,
+  )
+else
+  # Fallback: try to find via pkg-config or direct library search
+  libpq = dependency('libpq', required: false)
+  if not libpq.found()
+    libpq = cc.find_library('pq', required: false)
+  endif
+endif
+
+if not libpq.found()
+  libpq = not_found_dep
+endif
+
+
+
+
+
+
+###############################################################
 # Library: Tcl (for pltcl)
 #
 # NB: tclConfig.sh is used in autoconf build for getting
@@ -3058,6 +3099,7 @@ backend_both_deps += [
   icu_i18n,
   ldap,
   libintl,
+  libpq,
   libxml,
   lz4,
   pam,

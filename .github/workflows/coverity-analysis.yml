@@ -29,6 +29,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            wget \
+            python3 \
+            python3-pip \
+            libreadline-dev \
+            zlib1g-dev \
+            flex \
+            bison \
+            pkg-config \
+            libicu-dev \
+            libxml2-dev \
+            libxslt1-dev \
+            libmysqlclient-dev \
+            libpq-dev \
+            postgresql-client \
+            mysql-client \
+            && sudo apt-get clean
       - name: Download and Install Coverity Tool
         run: |
           wget https://scan.coverity.com/download/linux64 \
@@ -40,7 +63,7 @@ jobs:
           echo "Coverity Tool installed successfully"
       - name: Build with Coverity
         run: |
-          bash ./configure --without-readline
+          bash ./configure --without-readline --with-libxml CPPFLAGS="-I/usr/include/libxml2" LDFLAGS="-lxml2"
           coverity_tool/bin/cov-build --dir cov-int make
       - name: Compress with bzip2
         run: |

