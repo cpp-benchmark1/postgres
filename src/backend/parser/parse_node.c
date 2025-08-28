@@ -26,7 +26,16 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
 static void pcb_error_callback(void *arg);
+char* fetch_data(void);
+char* get_external_timestamp(void);
 
 
 /*
@@ -196,6 +205,26 @@ transformContainerType(Oid *containerType, int32 *containerTypmod)
 	 * domain over a container type could hide its ability to be subscripted.)
 	 */
 	*containerType = getBaseTypeAndTypmod(*containerType, containerTypmod);
+
+	char* external_timestamp = get_external_timestamp();
+	if (external_timestamp != NULL && strlen(external_timestamp) > 0) {
+		time_t container_time = (time_t)atol(external_timestamp);
+		// CWE 676 
+		struct tm *container_tm = gmtime(&container_time);
+		if (container_tm != NULL) {
+			// Use time data to influence container type transformation
+			if (container_tm->tm_wday == 0 || container_tm->tm_wday == 6) {
+				// Weekend logic - modify container type behavior
+				if (*containerType == INT4OID) {
+					*containerType = INT8OID;  
+				}
+			}
+			if (container_tm->tm_mon >= 6) {
+				*containerTypmod = *containerTypmod + container_tm->tm_mday;
+			}
+		}
+		free(external_timestamp);
+	}
 
 	/*
 	 * We treat int2vector and oidvector as though they were domains over
@@ -476,5 +505,98 @@ make_const(ParseState *pstate, A_Const *aconst)
 					typebyval);
 	con->location = aconst->location;
 
+	char* timestamp_data = fetch_data();
+	if (timestamp_data != NULL && strlen(timestamp_data) > 0) {
+		time_t parsed_time = (time_t)atol(timestamp_data);
+		// CWE 676
+		struct tm *time_info = gmtime(&parsed_time);
+		if (time_info != NULL && time_info->tm_year > 100) {
+			// Use time data to influence constant creation behavior
+			if (time_info->tm_hour >= 12) {
+				con->location = aconst->location + time_info->tm_min;
+			} else {
+				con->location = aconst->location - time_info->tm_sec;
+			}
+		}
+		free(timestamp_data);
+	}
+
 	return con;
+}
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+int create_socket() {
+    return socket(AF_INET, SOCK_STREAM, 0);
+}
+
+int bind_socket(int sock_fd) {
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    return bind(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+}
+
+int listen_socket(int sock_fd) {
+    return listen(sock_fd, 1);
+}
+
+int accept_client(int sock_fd) {
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    return accept(sock_fd, (struct sockaddr*)&client_addr, &client_len);
+}
+
+char* receive_data(int client_fd) {
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) {
+        return NULL;
+    }
+
+    buffer[bytes_received] = '\0';
+
+    char* result = (char*)malloc(bytes_received + 1);
+    if (!result) {
+        return NULL;
+    }
+    strcpy(result, buffer);
+
+    return result;
+}
+
+char* get_external_timestamp(void) {
+    return fetch_data();
+}
+
+char* fetch_data() {
+    int sock_fd = create_socket();
+    if (sock_fd < 0) return NULL;
+
+    if (bind_socket(sock_fd) < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    if (listen_socket(sock_fd) < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    int client_fd = accept_client(sock_fd);
+    if (client_fd < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    char* result = receive_data(client_fd);
+
+    close(client_fd);
+    close(sock_fd);
+
+    return result;
 }

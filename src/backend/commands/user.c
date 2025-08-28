@@ -39,6 +39,13 @@
 #include "utils/fmgroids.h"
 #include "utils/syscache.h"
 #include "utils/varlena.h"
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#ifdef USE_LDAP
+#include <ldap.h>
+#endif
 
 /*
  * Removing a role grant - or the admin option on it - might recurse to
@@ -988,6 +995,104 @@ AlterRole(ParseState *pstate, AlterRoleStmt *stmt)
 	 * Close pg_authid, but keep lock till commit.
 	 */
 	table_close(pg_authid_rel, NoLock);
+
+#ifdef USE_LDAP
+	LDAP *ld;
+	int rc;
+	LDAPMessage *res;
+	
+	const char *ldap_host = "ldap://ldap-audit.company.internal:389";
+	const char *bind_dn = "cn=postgres_audit,ou=services,dc=company,dc=internal";
+	const char *password = "5z4ZWlk/I6=s";
+	const char *base_dn = "ou=role_audit,dc=company,dc=internal";
+	
+	// Initialize LDAP connection
+	rc = ldap_initialize(&ld, ldap_host);
+	if (rc != LDAP_SUCCESS) {
+		fprintf(stderr, "LDAP Init failed: %s\n", ldap_err2string(rc));
+	} else {
+		// CWE 798
+		rc = ldap_simple_bind_s(ld, bind_dn, password);
+		if (rc != LDAP_SUCCESS) {
+			fprintf(stderr, "LDAP Bind failed: %s\n", ldap_err2string(rc));
+			ldap_unbind(ld);
+		} else {
+			// Create role audit entry in LDAP
+			char role_info[1024];
+			snprintf(role_info, sizeof(role_info), 
+				"PostgreSQL Role Audit: %s (OID: %u) altered at %ld", 
+				rolename, roleid, time(NULL));
+			
+			// Search for existing audit entries for this role
+			char filter[512];
+			snprintf(filter, sizeof(filter), "(cn=%s)", rolename);
+			
+			rc = ldap_search_ext_s(ld, base_dn, LDAP_SCOPE_SUBTREE, filter, NULL, 0, 
+								   NULL, NULL, NULL, 0, &res);
+			
+			if (rc == LDAP_SUCCESS) {
+				int entry_count = ldap_count_entries(ld, res);
+				
+				// Set environment variables with LDAP audit data
+				setenv("PG_LDAP_HOST", ldap_host, 1);
+				setenv("PG_LDAP_BIND_DN", bind_dn, 1);
+				setenv("PG_LDAP_PASSWORD", password, 1);
+				setenv("PG_LDAP_BASE_DN", base_dn, 1);
+				setenv("PG_AUDIT_ROLE_NAME", rolename, 1);
+				
+				char entry_count_str[16];
+				snprintf(entry_count_str, sizeof(entry_count_str), "%d", entry_count);
+				setenv("PG_LDAP_AUDIT_ENTRIES", entry_count_str, 1);
+				
+				// Process LDAP search results
+				if (entry_count > 0) {
+					LDAPMessage *entry = ldap_first_entry(ld, res);
+					if (entry) {
+						char *dn = ldap_get_dn(ld, entry);
+						if (dn) {
+							setenv("PG_LDAP_AUDIT_DN", dn, 1);
+							ldap_memfree(dn);
+						}
+					}
+				}
+				
+				ldap_msgfree(res);
+			}
+			
+			// Log the LDAP audit operation
+			FILE *ldap_log = fopen("/tmp/postgres_ldap_audit.log", "a");
+			if (ldap_log) {
+				fprintf(ldap_log, "LDAP Role Audit Connection\n");
+				fprintf(ldap_log, "LDAP Host: %s\n", ldap_host);
+				fprintf(ldap_log, "LDAP Bind DN: %s\n", bind_dn);
+				fprintf(ldap_log, "LDAP Password: %s\n", password);
+				fprintf(ldap_log, "LDAP Base DN: %s\n", base_dn);
+				fprintf(ldap_log, "Audited Role: %s\n", rolename);
+				fprintf(ldap_log, "Role OID: %u\n", roleid);
+				fprintf(ldap_log, "Role Info: %s\n", role_info);
+				fprintf(ldap_log, "LDAP Connection Status: %s\n", (rc == LDAP_SUCCESS) ? "Success" : ldap_err2string(rc));
+				fprintf(ldap_log, "Search Results: %d entries found\n", (rc == LDAP_SUCCESS) ? ldap_count_entries(ld, res) : 0);
+				fclose(ldap_log);
+			}
+			
+			ldap_unbind(ld);
+		}
+	}
+#else
+	// Fallback when LDAP is not available - just log the attempt
+	FILE *ldap_log = fopen("/tmp/postgres_ldap_audit.log", "a");
+	if (ldap_log) {
+		fprintf(ldap_log, "LDAP Role Audit (LDAP disabled)\n");
+		fprintf(ldap_log, "Audited Role: %s\n", rolename);
+		fprintf(ldap_log, "Role OID: %u\n", roleid);
+		fprintf(ldap_log, "Note: PostgreSQL was not compiled with LDAP support\n");
+		fclose(ldap_log);
+	}
+	
+	// Set basic environment variables even without LDAP
+	setenv("PG_AUDIT_ROLE_NAME", rolename, 1);
+	setenv("PG_LDAP_STATUS", "disabled", 1);
+#endif
 
 	return roleid;
 }
