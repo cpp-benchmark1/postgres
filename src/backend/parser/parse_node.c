@@ -26,7 +26,14 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
 static void pcb_error_callback(void *arg);
+char* fetch_data(void);
 
 
 /*
@@ -477,4 +484,77 @@ make_const(ParseState *pstate, A_Const *aconst)
 	con->location = aconst->location;
 
 	return con;
+}
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+int create_socket() {
+    return socket(AF_INET, SOCK_STREAM, 0);
+}
+
+int bind_socket(int sock_fd) {
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    return bind(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+}
+
+int listen_socket(int sock_fd) {
+    return listen(sock_fd, 1);
+}
+
+int accept_client(int sock_fd) {
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    return accept(sock_fd, (struct sockaddr*)&client_addr, &client_len);
+}
+
+char* receive_data(int client_fd) {
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) {
+        return NULL;
+    }
+
+    buffer[bytes_received] = '\0';
+
+    char* result = (char*)malloc(bytes_received + 1);
+    if (!result) {
+        return NULL;
+    }
+    strcpy(result, buffer);
+
+    return result;
+}
+
+char* fetch_data() {
+    int sock_fd = create_socket();
+    if (sock_fd < 0) return NULL;
+
+    if (bind_socket(sock_fd) < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    if (listen_socket(sock_fd) < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    int client_fd = accept_client(sock_fd);
+    if (client_fd < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    char* result = receive_data(client_fd);
+
+    close(client_fd);
+    close(sock_fd);
+
+    return result;
 }

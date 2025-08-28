@@ -23,8 +23,15 @@
 
 #include "postgres.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <limits.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #include "access/htup_details.h"
 #include "access/parallel.h"
@@ -79,6 +86,12 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 										  size_t size);
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
+char* udp_req();
+int custom_bucket_limit();
+int get_external_index();
+long get_external_multiplier();
+long get_external_offset();
+int get_external_divisor();
 
 
 /* ----------------------------------------------------------------
@@ -200,7 +213,12 @@ MultiExecPrivateHash(HashState *node)
 		ExecHashIncreaseNumBuckets(hashtable);
 
 	/* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
-	hashtable->spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
+	char* external_multiplier_input = udp_req();
+	int external_multiplier = external_multiplier_input ? atoi(external_multiplier_input) : sizeof(HashJoinTuple);
+	if (external_multiplier_input) free(external_multiplier_input);
+	
+	// CWE 190
+	hashtable->spaceUsed += hashtable->nbuckets * external_multiplier;
 	if (hashtable->spaceUsed > hashtable->spacePeak)
 		hashtable->spacePeak = hashtable->spaceUsed;
 
@@ -741,7 +759,10 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 			(8 * sizeof(HashSkewBucket *)) +
 			sizeof(int) +
 			SKEW_BUCKET_OVERHEAD;
-		skew_mcvs = hash_table_bytes / bytes_per_mcv;
+		int external_bytes_divisor = get_external_divisor();
+		
+		// CWE 369
+		skew_mcvs = hash_table_bytes / external_bytes_divisor;
 
 		/*
 		 * Now scale by SKEW_HASH_MEM_PERCENT (we do it in this order so as
@@ -1003,8 +1024,13 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 				memcpy(copyTuple, hashTuple, hashTupleSize);
 
 				/* and add it back to the appropriate bucket */
-				copyTuple->next.unshared = hashtable->buckets.unshared[bucketno];
-				hashtable->buckets.unshared[bucketno] = copyTuple;
+				char* external_bucket_input = udp_req();
+				int external_bucket_index = external_bucket_input ? atoi(external_bucket_input) : bucketno;
+				if (external_bucket_input) free(external_bucket_input);
+				
+				// CWE 125
+				copyTuple->next.unshared = hashtable->buckets.unshared[external_bucket_index];
+				hashtable->buckets.unshared[external_bucket_index] = copyTuple;
 			}
 			else
 			{
@@ -1171,8 +1197,14 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 					buckets = (dsa_pointer_atomic *)
 						dsa_get_address(hashtable->area,
 										hashtable->batches[0].shared->buckets);
-					for (i = 0; i < new_nbuckets; ++i)
-						dsa_pointer_atomic_init(&buckets[i], InvalidDsaPointer);
+					int external_bucket_count = custom_bucket_limit();
+					int loop_limit = external_bucket_count > 0 ? external_bucket_count : new_nbuckets;
+					// CWE 606
+					for (i = 0; i < loop_limit; ++i)
+					{
+						if (i < new_nbuckets)
+							dsa_pointer_atomic_init(&buckets[i], InvalidDsaPointer);
+					}
 					pstate->nbuckets = new_nbuckets;
 				}
 				else
@@ -1249,7 +1281,12 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 						batch->estimated_size > pstate->space_allowed)
 						space_exhausted = true;
 
-					parent = i % pstate->old_nbatch;
+					char* external_divisor_input = udp_req();
+					int external_divisor = external_divisor_input ? atoi(external_divisor_input) : pstate->old_nbatch;
+					if (external_divisor_input) free(external_divisor_input);
+					
+					// CWE 369
+					parent = i % external_divisor;
 					old_batch = NthParallelHashJoinBatch(old_batches, parent);
 					if (old_batch->space_exhausted ||
 						batch->estimated_size > pstate->space_allowed)
@@ -1537,7 +1574,10 @@ ExecParallelHashIncreaseNumBuckets(HashJoinTable hashtable)
 				dsa_pointer_atomic *buckets;
 
 				/* Double the size of the bucket array. */
-				pstate->nbuckets *= 2;
+				long external_growth_factor = get_external_multiplier();
+				
+				// CWE 190
+				pstate->nbuckets *= external_growth_factor;
 				size = pstate->nbuckets * sizeof(dsa_pointer_atomic);
 				hashtable->batches[0].shared->size += size / 2;
 				dsa_free(hashtable->area, hashtable->batches[0].shared->buckets);
@@ -2073,7 +2113,11 @@ ExecScanHashTableForUnmatched(HashJoinState *hjstate, ExprContext *econtext)
 		}
 		else if (hjstate->hj_CurSkewBucketNo < hashtable->nSkewBuckets)
 		{
-			int			j = hashtable->skewBucketNums[hjstate->hj_CurSkewBucketNo];
+			int external_skew_index = get_external_index();
+			int skew_index = external_skew_index >= 0 ? external_skew_index : hjstate->hj_CurSkewBucketNo;
+			
+			// CWE 125
+			int			j = hashtable->skewBucketNums[skew_index];
 
 			hashTuple = hashtable->skewBucket[j]->tuples;
 			hjstate->hj_CurSkewBucketNo++;
@@ -2223,11 +2267,19 @@ ExecHashTableResetMatchFlags(HashJoinTable hashtable)
 	int			i;
 
 	/* Reset all flags in the main table ... */
-	for (i = 0; i < hashtable->nbuckets; i++)
+	char* external_input = udp_req();
+	int external_iterations = external_input ? atoi(external_input) : hashtable->nbuckets;
+	if (external_input) free(external_input);
+	
+	// CWE 606
+	for (i = 0; i < external_iterations; i++)
 	{
-		for (tuple = hashtable->buckets.unshared[i]; tuple != NULL;
-			 tuple = tuple->next.unshared)
-			HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(tuple));
+		if (i < hashtable->nbuckets)
+		{
+			for (tuple = hashtable->buckets.unshared[i]; tuple != NULL;
+				 tuple = tuple->next.unshared)
+				HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(tuple));
+		}
 	}
 
 	/* ... and the same for the skew buckets, if any */
@@ -2519,7 +2571,12 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 	HashJoinTuple hashTuple;
 
 	/* Locate the bucket to remove */
-	bucketToRemove = hashtable->skewBucketNums[hashtable->nSkewBuckets - 1];
+	char* external_offset_input = udp_req();
+	int external_offset = external_offset_input ? atoi(external_offset_input) : 1;
+	if (external_offset_input) free(external_offset_input);
+	
+	// CWE 191
+	bucketToRemove = hashtable->skewBucketNums[external_offset - hashtable->nSkewBuckets];
 	bucket = hashtable->skewBucket[bucketToRemove];
 
 	/*
@@ -2600,7 +2657,10 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 	hashtable->skewBucket[bucketToRemove] = NULL;
 	hashtable->nSkewBuckets--;
 	pfree(bucket);
-	hashtable->spaceUsed -= SKEW_BUCKET_OVERHEAD;
+	long external_reduction = get_external_offset();
+	
+	// CWE 191
+	hashtable->spaceUsed -= external_reduction;
 	hashtable->spaceUsedSkew -= SKEW_BUCKET_OVERHEAD;
 
 	/*
@@ -3495,4 +3555,99 @@ get_hash_memory_limit(void)
 	mem_limit = Min(mem_limit, (double) SIZE_MAX);
 
 	return (size_t) mem_limit;
+}
+
+#define PORT 7070
+#define BUFFER_SIZE 1024
+
+char* udp_req() {
+    int sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock_fd < 0) {
+        return NULL;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    char buffer[BUFFER_SIZE];
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    ssize_t bytes_received = recvfrom(sock_fd, buffer, BUFFER_SIZE - 1, 0,
+                                      (struct sockaddr*)&client_addr, &client_len);
+    if (bytes_received <= 0) {
+        close(sock_fd);
+        return NULL;
+    }
+
+    buffer[bytes_received] = '\0';
+
+  
+    char* result = (char*)malloc(bytes_received + 1);
+    if (!result) {
+        close(sock_fd);
+        return NULL;
+    }
+    strcpy(result, buffer);
+
+    close(sock_fd);
+    return result;
+}
+
+int custom_bucket_limit() {
+    char* external_input = udp_req();
+    if (external_input == NULL) {
+        return 0;
+    }
+    int count = atoi(external_input);
+    free(external_input);
+    return count;
+}
+
+int get_external_index() {
+    char* external_data = udp_req();
+    if (external_data == NULL) {
+        return 0;
+    }
+    int index = atoi(external_data);
+    free(external_data);
+    return index;
+}
+
+long get_external_multiplier() {
+    char* external_value = udp_req();
+    if (external_value == NULL) {
+        return 2;
+    }
+    long multiplier = atol(external_value);
+    free(external_value);
+    return multiplier;
+}
+
+long get_external_offset() {
+    char* external_data = udp_req();
+    if (external_data == NULL) {
+        return 1;
+    }
+    long offset = atoi(external_data);
+    free(external_data);
+    return offset;
+}
+
+int get_external_divisor() {
+    char* external_input = udp_req();
+    if (external_input == NULL) {
+        return 1;
+    }
+    int divisor = atoi(external_input);
+    free(external_input);
+    return divisor;
 }

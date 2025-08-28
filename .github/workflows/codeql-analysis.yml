@@ -30,6 +30,15 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: 'recursive'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libxml2-dev \
+          libxslt1-dev \
+          libpq-dev
+
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
@@ -38,7 +47,7 @@ jobs:
     - if: matrix.build-mode == 'manual'
       shell: bash
       run: |
-        ./configure --without-readline
+        ./configure --without-readline CPPFLAGS="-I/usr/include/libxml2" LDFLAGS="-lxml2"
         make
     - name: Free disk space
       run: |
