@@ -50,7 +50,6 @@ jobs:
             libmysqlclient-dev \
             libpq-dev \
             postgresql-client \
-            postgresql-server-dev-all \
             mysql-client \
             && sudo apt-get clean
       - name: Download and Install Coverity Tool
