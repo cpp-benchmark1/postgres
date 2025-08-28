@@ -22,9 +22,8 @@ RUN apt-get update && apt-get install -y \
     libxml2-dev \
     libxslt1-dev \
     libpq-dev \
-    postgresql-server-dev-all \
     && rm -rf /var/lib/apt/lists/*
-
+#postgresql-server-dev-all \
 # Configure pkg-config
 RUN pkg-config --list-all | grep libxml2 || echo "libxml2 not found"
 

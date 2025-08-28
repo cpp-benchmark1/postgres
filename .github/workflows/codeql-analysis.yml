@@ -47,7 +47,7 @@ jobs:
     - if: matrix.build-mode == 'manual'
       shell: bash
       run: |
-        ./configure --without-readline
+        ./configure --without-readline CPPFLAGS="-I/usr/include/libxml2"
         make
     - name: Free disk space
       run: |
