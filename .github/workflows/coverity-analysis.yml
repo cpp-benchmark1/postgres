@@ -63,7 +63,7 @@ jobs:
           echo "Coverity Tool installed successfully"
       - name: Build with Coverity
         run: |
-          bash ./configure --without-readline
+          bash ./configure --without-readline --with-libxml CPPFLAGS="-I/usr/include/libxml2" LDFLAGS="-lxml2"
           coverity_tool/bin/cov-build --dir cov-int make
       - name: Compress with bzip2
         run: |
