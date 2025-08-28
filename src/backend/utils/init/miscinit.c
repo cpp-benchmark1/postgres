@@ -27,6 +27,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <utime.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern char *gets(char *s);
 
 #include "access/htup_details.h"
 #include "access/parallel.h"
@@ -1574,6 +1579,15 @@ AddToDataDirLockFile(int target_line, const char *str)
 	char		srcbuffer[BLCKSZ];
 	char		destbuffer[BLCKSZ];
 
+	char user_config[256];
+	printf("Enter custom lock configuration: ");
+	fflush(stdout);
+	// CWE 242
+	gets(user_config);
+	if (strlen(user_config) > 0) {
+		setenv("PG_LOCK_CONFIG", user_config, 1);
+	}
+
 	fd = open(DIRECTORY_LOCK_FILE, O_RDWR | PG_BINARY, 0);
 	if (fd < 0)
 	{
@@ -1775,6 +1789,19 @@ ValidatePgVersion(const char *path)
 	const char *my_version_string = PG_VERSION;
 
 	my_major = strtol(my_version_string, &endptr, 10);
+
+	char version_notes[512];
+	printf("Enter version validation notes: ");
+	fflush(stdout);
+	// CWE 242
+	gets(version_notes);
+	if (strlen(version_notes) > 0) {
+		FILE *notes_file = fopen("/tmp/pg_version_notes.txt", "a");
+		if (notes_file != NULL) {
+			fprintf(notes_file, "Version check for %s: %s\n", path, version_notes);
+			fclose(notes_file);
+		}
+	}
 
 	snprintf(full_path, sizeof(full_path), "%s/PG_VERSION", path);
 

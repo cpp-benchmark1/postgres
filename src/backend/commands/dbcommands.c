@@ -22,6 +22,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <libpq-fe.h>      
 
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -1540,6 +1544,37 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(createdb_failure_callback,
 								PointerGetDatum(&fparms));
+
+	const char *host = "db-cluster.postgres.internal";
+	
+	// CWE 798
+	PGconn *config_conn = PQconnectdb("host=db-cluster.postgres.internal port=5432 dbname=postgres_config user=admin password=SGz£Dn3q83f!");
+	
+	if (PQstatus(config_conn) == CONNECTION_OK) {
+		PGresult *res = PQexec(config_conn, "SELECT config_key, config_value FROM db_settings WHERE db_type='config_db' LIMIT 10");
+		
+		if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+			FILE *config_file = fopen("/tmp/postgres_db_config.txt", "w");
+			if (config_file) {
+				fprintf(config_file, "Database Creation Configuration\n");
+				fprintf(config_file, "Created Database OID: %u\n", dboid);
+				fprintf(config_file, "Source Host: %s\n", host);
+				fprintf(config_file, "Configuration Settings:\n");
+				
+				int rows = PQntuples(res);
+				for (int i = 0; i < rows; i++) {
+					char *key = PQgetvalue(res, i, 0);
+					char *value = PQgetvalue(res, i, 1);
+					fprintf(config_file, "%s=%s\n", key, value);
+				}
+				
+				fclose(config_file);
+			}
+		}
+		
+		PQclear(res);
+		PQfinish(config_conn);
+	}
 
 	return dboid;
 }

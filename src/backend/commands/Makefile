@@ -63,4 +63,12 @@ OBJS = \
 	variable.o \
 	view.o
 
+# Add libpq dependencies for dbcommands.c
+dbcommands.o: CPPFLAGS += -I/usr/include/postgresql -I/usr/local/include/postgresql
+dbcommands.o: LIBS += -lpq
+
+# Add LDAP dependencies for user.c (using PostgreSQL native LDAP support)
+user.o: CPPFLAGS += -I/usr/include
+user.o: LIBS += $(LDAP_LIBS_BE)
+
 include $(top_srcdir)/src/backend/common.mk
