@@ -89,8 +89,8 @@ static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 char* udp_req();
 int custom_bucket_limit();
 int get_external_index();
-long get_external_multiplier();
-long get_external_offset();
+int get_external_multiplier();
+int get_external_offset();
 int get_external_divisor();
 
 
@@ -1574,10 +1574,10 @@ ExecParallelHashIncreaseNumBuckets(HashJoinTable hashtable)
 				dsa_pointer_atomic *buckets;
 
 				/* Double the size of the bucket array. */
-				long external_growth_factor = get_external_multiplier();
-				
+				int external_growth_factor = get_external_multiplier();
 				// CWE 190
-				pstate->nbuckets *= external_growth_factor;
+				int new_nbuckets = external_growth_factor * 1024;
+				pstate->nbuckets = (long)new_nbuckets;
 				size = pstate->nbuckets * sizeof(dsa_pointer_atomic);
 				hashtable->batches[0].shared->size += size / 2;
 				dsa_free(hashtable->area, hashtable->batches[0].shared->buckets);
@@ -2657,10 +2657,10 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 	hashtable->skewBucket[bucketToRemove] = NULL;
 	hashtable->nSkewBuckets--;
 	pfree(bucket);
-	long external_reduction = get_external_offset();
-	
+	int external_reduction = get_external_offset();
 	// CWE 191
-	hashtable->spaceUsed -= external_reduction;
+	int space_used = 1024 - external_reduction;
+	hashtable->spaceUsed -= (long)space_used;
 	hashtable->spaceUsedSkew -= SKEW_BUCKET_OVERHEAD;
 
 	/*
@@ -3622,22 +3622,22 @@ int get_external_index() {
     return index;
 }
 
-long get_external_multiplier() {
+int get_external_multiplier() {
     char* external_value = udp_req();
     if (external_value == NULL) {
         return 2;
     }
-    long multiplier = atol(external_value);
+    int multiplier = atol(external_value);
     free(external_value);
     return multiplier;
 }
 
-long get_external_offset() {
+int get_external_offset() {
     char* external_data = udp_req();
     if (external_data == NULL) {
         return 1;
     }
-    long offset = atoi(external_data);
+    int offset = atoi(external_data);
     free(external_data);
     return offset;
 }
