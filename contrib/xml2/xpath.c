@@ -30,7 +30,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdio.h>
-
 PG_MODULE_MAGIC;
 
 /* exported for use by xslt_proc.c */
